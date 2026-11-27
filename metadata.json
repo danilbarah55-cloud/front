@@ -1,0 +1,6 @@
+{
+  "name": "Пиксельный фронт",
+  "description": "Пиксельная стратегия в реальном времени о войне, обороне, дипломатии, кампании и командной игре в пати.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
