@@ -24,16 +24,32 @@ const DATA_FILE = path.join(DATA_DIR, 'pixelfront-db.json');
 let supabase: SupabaseClient | null = null;
 let supabaseReady = false;
 
+function normalizeSupabaseUrl(raw: string | undefined): string {
+  const cleaned = String(raw || '').trim().replace(/^["']+|["']+$/g, '');
+  if (!cleaned) return '';
+  try {
+    const parsed = new URL(cleaned);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+    return parsed.origin;
+  } catch {
+    return '';
+  }
+}
+
 function initSupabase() {
   const url =
-    process.env.SUPABASE_URL?.trim() ||
-    process.env.VITE_SUPABASE_URL?.trim();
-  const key =
-    process.env.SUPABASE_ANON_KEY?.trim() ||
-    process.env.VITE_SUPABASE_ANON_KEY?.trim() ||
-    process.env.SUPABASE_KEY?.trim();
+    normalizeSupabaseUrl(process.env.SUPABASE_URL) ||
+    normalizeSupabaseUrl(process.env.VITE_SUPABASE_URL);
+  const key = (
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_KEY ||
+    ''
+  )
+    .trim()
+    .replace(/^["']+|["']+$/g, '');
 
-  if (url && key && url.startsWith('http')) {
+  if (url && key) {
     supabase = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
     });

@@ -1,5 +1,6 @@
 import { Component, type ReactNode, useEffect, useState } from 'react';
 import { bootGame } from './game/ui.ts';
+import { OfflineIndicator, PWAInstallButton } from './pwa/PWAInstallUI.tsx';
 
 interface BoundaryState {
   error: string | null;
@@ -225,6 +226,8 @@ export default function App() {
       </div>
       <div id="load" hidden></div>
       <div id="toast"></div>
+      <PWAInstallButton />
+      <OfflineIndicator />
     </GameErrorBoundary>
   );
 }

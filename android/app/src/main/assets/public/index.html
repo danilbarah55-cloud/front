@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Пиксельный фронт</title>
+    <meta name="description" content="Пиксельная стратегия в реальном времени о войне, обороне, дипломатии и сюжетной кампании." />
+    <meta name="theme-color" content="#0a0f1d" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ПиксФронт" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+    <meta property="og:title" content="Пиксельный фронт" />
+    <meta property="og:description" content="Пиксельная стратегия в реальном времени о войне, обороне, дипломатии и сюжетной кампании." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&family=Press+Start+2P&display=swap" rel="stylesheet" />
+    <script type="module" crossorigin src="./assets/index-BfMznVZl.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BsmsLGbN.css">
+  <link rel="manifest" href="./manifest.webmanifest"></head>
+  <body style="margin:0;background:#0a0f1d;color:#edf2ff">
+    <noscript>
+      <div style="padding:24px;text-align:center;font-family:sans-serif">
+        Для запуска игры «Пиксельный фронт» включите JavaScript.
+      </div>
+    </noscript>
+    <div id="root"></div>
+    <script>
+      setTimeout(function () {
+        if (window.__PF_MOUNTED) return;
+        var root = document.getElementById('root');
+        if (!root || root.childElementCount > 0) return;
+        root.innerHTML =
+          '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;font-family:system-ui,sans-serif;background:#0a0f1d;color:#edf2ff">' +
+          '<div style="max-width:460px;background:#12192c;border:2px solid #2b385f;padding:20px">' +
+          '<h2 style="margin:0 0 10px;color:#f6c744">Пиксельный фронт</h2>' +
+          '<p style="margin:0 0 10px;line-height:1.45">Скрипт приложения не загрузился.</p>' +
+          '<p style="margin:0;font-size:13px;color:#93a3c7;line-height:1.45">Если вы открыли репозиторий на GitHub Pages напрямую из исходников, включите публикацию через <b>GitHub Actions</b> (файл <code>.github/workflows/deploy.yml</code> уже добавлен) или соберите проект командой <code>npm run build</code>.</p>' +
+          '</div></div>';
+      }, 3500);
+    </script>
+  </body>
+</html>

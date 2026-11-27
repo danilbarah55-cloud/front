@@ -60,12 +60,24 @@ export function mergeDef<T extends Record<string, any>>(d: T, o: any): T {
   return r;
 }
 
+function normalizeSupabaseUrl(raw: string | undefined): string {
+  const cleaned = String(raw || '').trim().replace(/^["']+|["']+$/g, '');
+  if (!cleaned) return '';
+  try {
+    const parsed = new URL(cleaned);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+    return parsed.origin;
+  } catch {
+    return '';
+  }
+}
+
 const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env || {};
-const VITE_SB_URL = (env.VITE_SUPABASE_URL || '').trim();
-const VITE_SB_ANON = (env.VITE_SUPABASE_ANON_KEY || '').trim();
+const VITE_SB_URL = normalizeSupabaseUrl(env.VITE_SUPABASE_URL);
+const VITE_SB_ANON = (env.VITE_SUPABASE_ANON_KEY || '').trim().replace(/^["']+|["']+$/g, '');
 
 let directSupabase: SupabaseClient | null = null;
-if (VITE_SB_URL && VITE_SB_ANON && VITE_SB_URL.startsWith('http')) {
+if (VITE_SB_URL && VITE_SB_ANON) {
   try {
     directSupabase = createClient(VITE_SB_URL, VITE_SB_ANON, {
       auth: { persistSession: false, autoRefreshToken: false },
@@ -145,8 +157,11 @@ export async function probeBackend(): Promise<boolean> {
   if (probePromise) return probePromise;
 
   probePromise = (async () => {
+    const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
     const isStaticHost =
+      Boolean(cap?.isNativePlatform?.()) ||
       location.protocol === 'file:' ||
+      location.protocol === 'capacitor:' ||
       location.hostname.endsWith('.github.io') ||
       location.hostname === 'github.io';
 
