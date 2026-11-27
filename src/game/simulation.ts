@@ -3,7 +3,6 @@ import {
   AID,
   ALLPAL,
   AR,
-  BKEYS,
   BT,
   DCOST,
   DIFF,
@@ -15,7 +14,6 @@ import {
   UN,
 } from './constants.ts';
 import { addCoins, PF, savePF, track, trackMax } from './profile.ts';
-import { emitGame, MP, reportGameEnd } from './network.ts';
 import {
   allocWorld,
   applyPalette,
@@ -63,11 +61,8 @@ export function setSimHooks(next: SimHooks): void {
   Object.assign(simHooks, next);
 }
 
-export function say(m: string, all = true): void {
+export function say(m: string): void {
   simHooks.toast?.(m);
-  if (all !== false && MP.on && MP.host) {
-    emitGame('msg', { to: '*', m });
-  }
 }
 
 export function pct(k: number): string {
@@ -116,7 +111,7 @@ export function allyErr(o: number, tx: number, ty: number): string {
 }
 
 function bonusUpAll(id: string): number {
-  return MP.on ? 0 : bonusUp(G.ME, id);
+  return bonusUp(G.ME, id);
 }
 
 export function dipInit(): void {
@@ -146,7 +141,6 @@ export interface NewGameConfig {
   names?: Record<number, string>;
   enemies?: number[];
   humans?: number[];
-  partyAllies?: number[];
   mission?: Partial<MissionState> | null;
   startMoney?: number;
   aiAggr?: number;
@@ -260,19 +254,6 @@ export function newGame(cfg: NewGameConfig = {}): void {
   }
 
   dipInit();
-  if (Array.isArray(cfg.partyAllies) && cfg.partyAllies.length > 1) {
-    G.mpAllies = cfg.partyAllies.slice();
-    for (const a of cfg.partyAllies) {
-      for (const b of cfg.partyAllies) {
-        if (a !== b && G.AL[a]) {
-          G.AL[a][b] = 1;
-          G.REL[a][b] = 50;
-        }
-      }
-    }
-  } else {
-    G.mpAllies = [];
-  }
 
   G.ownDirty = true;
   G.tilesDirty = true;
@@ -308,7 +289,7 @@ export function addB(t: string, o: number, x: number, y: number, cap = false): B
 }
 
 export function recount(): void {
-  const td = G.tilesDirty || MP.on;
+  const td = G.tilesDirty;
   G.tilesDirty = false;
   for (let k = 1; k <= G.NN; k++) {
     const p = G.P[k];
@@ -375,9 +356,6 @@ export function paintAt(k: number, fx: number, fy: number, r: number): void {
 
 export function paintMe(x: number, y: number, r: number): void {
   paintAt(G.ME, x, y, r);
-  if (MP.on && !MP.host && MP.paintBuf.length < 80) {
-    MP.paintBuf.push([+x.toFixed(1), +y.toFixed(1)]);
-  }
 }
 
 function ring(x: number, y: number, r: number, c: string, life: number): void {
@@ -412,7 +390,7 @@ function hitUnit(u: Unit, dmg: number, byO?: number, byK?: string): void {
     sparks(u.x, u.y, u.k === 'plane' ? 14 : 10, 3, ['#ffb02e', '#ff6b2e', '#555', '#222'], 0.35);
     ring(u.x, u.y, 1.2, '#ff8a3d', 0.4);
     if (inView(u.x, u.y)) snd(u.k === 'plane' ? 200 : 130, 0.3, 'sawtooth', 0.06, 40);
-    if (byO === G.ME && u.o !== G.ME && (!MP.on || MP.host)) {
+    if (byO === G.ME && u.o !== G.ME) {
       if (u.k === 'tank') {
         G.RS.tankKills++;
         track('tankKills');
@@ -426,7 +404,6 @@ function hitUnit(u: Unit, dmg: number, byO?: number, byK?: string): void {
 }
 
 export function boom(x: number, y: number, r: number, dmg: number, by?: number): void {
-  if (MP.on && MP.host) G.mpFx.push([+x.toFixed(1), +y.toFixed(1), r]);
   ring(x, y, r + 1, '#ffd27a', 0.45);
   sparks(x, y, Math.round(8 + r * 8), 3 + r * 2, ['#ffb02e', '#ff6b2e', '#ffe27a', '#555'], 0.35);
   if (r >= 1 && PF.set.part) {
@@ -489,7 +466,7 @@ function eliminate(o: number): void {
   for (let i = 0; i < G.N; i++) if (G.OWN[i] === o) G.OWN[i] = 0;
   G.ownDirty = true;
   G.tilesDirty = true;
-  say(o === G.ME ? 'Ваша столица уничтожена' : `${G.NAMES[o]} повержена`, o !== G.ME);
+  say(o === G.ME ? 'Ваша столица уничтожена' : `${G.NAMES[o]} повержена`);
   checkEnd();
 }
 
@@ -522,12 +499,12 @@ function annex(f: number, h: number): void {
     ring(sc.x + 0.5, sc.y + 0.5, 6, G.CS[h], 0.9);
     sparks(sc.x + 0.5, sc.y + 0.5, 24, 4, [G.CS[h], '#fff'], 0.4);
   }
-  if (h === G.ME && (!MP.on || MP.host)) {
+  if (h === G.ME) {
     G.RS.annex++;
     track('annex');
   }
   recount();
-  say(`${G.NAMES[f]} капитулировала. Территория и города отходят: ${G.NAMES[h]}`, true);
+  say(`${G.NAMES[f]} капитулировала. Территория и города отходят: ${G.NAMES[h]}`);
   checkEnd();
 }
 
@@ -535,30 +512,8 @@ export function finishGame(win: boolean): void {
   if (G.phase === 'end') return;
   G.phase = 'end';
   const r: EndReward = { coins: 0, lines: [], stars: 0, win };
-  const solo = !MP.on;
 
-  if (!solo) {
-    track('online');
-    if (win) {
-      track('wins');
-      r.coins = 120;
-      r.lines.push('Победа в онлайн-матче: +120');
-    } else {
-      r.coins = 20;
-      r.lines.push('Участие: +20');
-    }
-    if (MP.host) {
-      const winners: number[] = [];
-      const winnerNames: string[] = [];
-      for (let k = 1; k <= G.NN; k++) {
-        if (G.P[k]?.alive) {
-          winners.push(k);
-          winnerNames.push(G.NAMES[k]);
-        }
-      }
-      reportGameEnd(winners, winnerNames);
-    }
-  } else if (G.MISSION && G.MISSION.type === 'tut') {
+  if (G.MISSION && G.MISSION.type === 'tut') {
     const first = PF.tutDone !== 1;
     PF.tutDone = 1;
     track('tutorial');
@@ -622,7 +577,7 @@ export function finishGame(win: boolean): void {
     }
   }
 
-  const dr = !solo ? (win ? 40 : -10) : G.MISSION ? (win ? 15 : 0) : win ? 25 : -10;
+  const dr = G.MISSION ? (win ? 15 : 0) : win ? 25 : -10;
   if (dr) {
     PF.rating = Math.max(0, PF.rating + dr);
     r.lines.push(`Рейтинг: ${dr > 0 ? '+' : ''}${dr}`);
@@ -639,7 +594,6 @@ export function checkEnd(): void {
     return;
   }
   if (G.MISSION && G.MISSION.type !== 'elim') return;
-  if (MP.on && !MP.host) return;
   if (G.P.every((p, i) => !p || i === G.ME || !p.alive || isAlly(G.ME, i))) {
     G.RS.shared = G.P.some((p, i) => Boolean(p && i !== G.ME && p.alive));
     finishGame(true);
@@ -666,10 +620,8 @@ export function place(o: number, t: string, x: number, y: number): string {
   recount();
   if (o === G.ME) {
     snd(300, 0.12, 'square', 0.05, 500);
-    if (!MP.on || MP.host) {
-      G.RS.built++;
-      track('built');
-    }
+    G.RS.built++;
+    track('built');
   }
   return '';
 }
@@ -847,10 +799,8 @@ export function assault(o: number, tx: number, ty: number): string {
   sparks(tx + 0.5, ty + 0.5, 12, 3, [G.CS[o], '#fff'], 0.3);
   if (o === G.ME) {
     snd(180, 0.2, 'square', 0.06, 120);
-    if (!MP.on || MP.host) {
-      track('assaults');
-      if (info.amph) track('landings');
-    }
+    track('assaults');
+    if (info.amph) track('landings');
   }
   recount();
   if (capHit) annex(capHit, o);
@@ -961,7 +911,7 @@ export function orderGround(o: number, k: 'tank' | 'rpg', tx: number, ty: number
   u.tx = tx + 0.5;
   u.ty = ty + 0.5;
   ring(src.x + 0.5, src.y + 0.5, 1.2, G.CS[o], 0.4);
-  if (o === G.ME && (!MP.on || MP.host)) {
+  if (o === G.ME) {
     if (k === 'tank') {
       G.RS.tanks++;
       track('tanks');
@@ -993,7 +943,7 @@ export function orderPlane(o: number, tx: number, ty: number): string {
   u.bombs = 4 + 2 * tk(o, 'air7');
   u.bt = 0;
   u.ret = false;
-  if (o === G.ME && (!MP.on || MP.host)) {
+  if (o === G.ME) {
     track('planes');
     snd(300, 0.5, 'sawtooth', 0.05, 700);
   }
@@ -1100,7 +1050,6 @@ function unitFire(u: Unit, tg: { unit?: Unit; b?: Building }): void {
   const tx = tg.unit ? tg.unit.x : tg.b!.x + 0.5;
   const ty = tg.unit ? tg.unit.y : tg.b!.y + 0.5;
   G.BM.push({ x1: u.x, y1: u.y, x2: tx, y2: ty, life: 0.12, c: u.k === 'rpg' ? '#ff9a4a' : '#ffe9a0' });
-  if (MP.on && MP.host) G.mpBm.push([+u.x.toFixed(1), +u.y.toFixed(1), +tx.toFixed(1), +ty.toFixed(1)]);
   sparks(tx, ty, 4, 2, ['#ffb02e', '#ffe27a'], 0.25);
   if (inView(u.x, u.y)) snd(u.k === 'rpg' ? 320 : 220, 0.1, 'square', 0.03, 90);
   if (tg.unit) hitUnit(tg.unit, dm, u.o, u.k);
@@ -1133,7 +1082,7 @@ function occupy(u: Unit): void {
     G.ownDirty = true;
     G.tilesDirty = true;
     recount();
-    if (u.o === G.ME && (!MP.on || MP.host)) track('assaults');
+    if (u.o === G.ME) track('assaults');
   }
 }
 
@@ -1345,7 +1294,7 @@ export function setAlly(a: number, b: number, v: number): void {
     if (a === G.ME || b === G.ME) track('alliances');
   }
   for (const u of G.U) u.tg = null;
-  say(v ? `${nameOf(a)} и ${nameOf(b)} заключили союз` : `Союз расторгнут: ${nameOf(a)} и ${nameOf(b)}`, false);
+  say(v ? `${nameOf(a)} и ${nameOf(b)} заключили союз` : `Союз расторгнут: ${nameOf(a)} и ${nameOf(b)}`);
   simHooks.dipRefresh?.();
 }
 
@@ -1589,7 +1538,6 @@ function updatePlay(dt: number): void {
     if (tg) {
       b.cd = 1.4;
       G.BM.push({ x1: b.x + 0.5, y1: b.y + 0.5, x2: tg.x, y2: tg.y, life: 0.18, c: '#9ff' });
-      if (MP.on && MP.host) G.mpBm.push([+(b.x + 0.5).toFixed(1), +(b.y + 0.5).toFixed(1), +tg.x.toFixed(1), +tg.y.toFixed(1)]);
       if (inView(b.x, b.y)) snd(900, 0.12, 'square', 0.03, 300);
       const hitp = (isU ? 0.65 : tg.k === 'm' ? 0.7 : 0.8) * Math.min(1, (G.P[b.o]?.eff || 0) + 0.2);
       if (rng() < hitp) {
@@ -1598,7 +1546,7 @@ function updatePlay(dt: number): void {
           if (tg.hp <= 0) {
             tg.dead = true;
             boom(tg.x, tg.y, 0.8, 0);
-            if (b.o === G.ME && (!MP.on || MP.host)) {
+            if (b.o === G.ME) {
               G.RS.sam++;
               track('samKills');
             }
@@ -1610,7 +1558,7 @@ function updatePlay(dt: number): void {
           if (tg.hp <= 0) {
             tg.dead = true;
             boom(tg.x, tg.y, 0.8, 0);
-            if (b.o === G.ME && (!MP.on || MP.host)) {
+            if (b.o === G.ME) {
               G.RS.sam++;
               track('samKills');
             }
@@ -1621,11 +1569,9 @@ function updatePlay(dt: number): void {
       }
     }
   }
-  if (!MP.on) {
-    dipTick(dt);
-    if (tk(G.ME, 'fort6')) {
-      for (const b of G.B) if (!b.dead && b.o === G.ME && b.hp < b.max) b.hp = Math.min(b.max, b.hp + 0.6 * dt);
-    }
+  dipTick(dt);
+  if (tk(G.ME, 'fort6')) {
+    for (const b of G.B) if (!b.dead && b.o === G.ME && b.hp < b.max) b.hp = Math.min(b.max, b.hp + 0.6 * dt);
   }
   let inc: 'm' | 'd' | null = null;
   for (const p of G.PR) {
@@ -1724,53 +1670,6 @@ export function evTick(dt: number): void {
 
 export function doAct(kind: string, a: { t?: string; x?: number; y?: number; tx?: number; ty?: number; b?: Building }): string {
   const me = G.ME;
-  if (MP.on && !MP.host) {
-    let e = '';
-    if (kind === 'place') e = canPlace(me, a.t!, a.x!, a.y!);
-    else if (kind === 'repair') {
-      const b = a.b;
-      if (!b || b.o !== me) e = 'Это не ваше здание';
-      else if (b.hp >= b.max) e = 'Здание целое';
-      else if (G.P[me]!.money < Math.ceil((b.max - b.hp) * 0.5)) e = 'Не хватает денег';
-    } else if (kind === 'missile') {
-      e = !G.P[me]!.cnt.silo
-        ? 'Нужна ракетная шахта'
-        : !nearestB(me, 'silo', a.tx!, a.ty!, mr(me))
-          ? `Цель дальше ${mr(me)} км от ваших шахт`
-          : G.P[me]!.money < MCOST
-            ? 'Не хватает денег'
-            : '';
-    } else if (kind === 'drone') {
-      e = !G.P[me]!.cnt.dfac
-        ? 'Нужен завод дронов'
-        : !nearestB(me, 'dfac', a.tx!, a.ty!, DR)
-          ? `Цель дальше ${DR} км от ваших заводов`
-          : G.P[me]!.money < DCOST
-            ? 'Не хватает денег'
-            : '';
-    } else if (kind === 'assault') {
-      e = assaultInfo(me, a.x!, a.y!).err;
-    } else if (kind === 'tank') {
-      e = !G.P[me]!.cnt.factory ? 'Нужен завод техники' : G.P[me]!.money < ucost(me, 'tank') ? 'Не хватает денег' : '';
-    } else if (kind === 'rpg') {
-      e = !G.P[me]!.cnt.barracks
-        ? 'Нужна казарма'
-        : G.P[me]!.money < ucost(me, 'rpg')
-          ? 'Не хватает денег'
-          : G.P[me]!.sol < UN.rpg.sol
-            ? `Мало солдат: нужно ${UN.rpg.sol}`
-            : '';
-    } else if (kind === 'plane') {
-      e = !G.P[me]!.cnt.airfield ? 'Нужен аэродром' : G.P[me]!.money < planeCost(me) ? 'Не хватает денег' : '';
-    }
-    if (e) return e;
-    emitGame('cmd', { c: kind, t: a.t, x: a.x, y: a.y, tx: a.tx, ty: a.ty });
-    if (kind === 'place' && a.t) {
-      snd(300, 0.12, 'square', 0.05, 500);
-      G.P[me]!.money -= BT[a.t].c;
-    }
-    return '';
-  }
   if (kind === 'place') return place(me, a.t!, a.x!, a.y!);
   if (kind === 'missile') return launchMissile(me, a.tx!, a.ty!);
   if (kind === 'drone') return launchDrones(me, a.tx!, a.ty!);
@@ -1780,417 +1679,4 @@ export function doAct(kind: string, a: { t?: string; x?: number; y?: number; tx?
   if (kind === 'rpg') return orderGround(me, 'rpg', a.x!, a.y!, 'barracks');
   if (kind === 'plane') return orderPlane(me, a.tx!, a.ty!);
   return '';
-}
-
-/* ---- Multiplayer Sync (Host & Client) ---- */
-
-function encRows(y0: number, y1: number): string[] {
-  const out: string[] = [];
-  for (let y = y0; y < y1; y++) {
-    let s = '';
-    let v = G.OWN[y * G.W];
-    let c = 0;
-    for (let x = 0; x < G.W; x++) {
-      const o = G.OWN[y * G.W + x];
-      if (o === v) c++;
-      else {
-        s += `${v}:${c},`;
-        v = o;
-        c = 1;
-      }
-    }
-    s += `${v}:${c}`;
-    out.push(s);
-  }
-  return out;
-}
-
-function sendOwn(y0: number, y1: number): void {
-  let a = y0;
-  while (a < y1) {
-    let b = a;
-    const rows: string[] = [];
-    let size = 0;
-    while (b < y1) {
-      const r = encRows(b, b + 1)[0];
-      if (size + r.length > 3200 && rows.length) break;
-      rows.push(r);
-      size += r.length + 3;
-      b++;
-    }
-    emitGame('ow', { y: a, r: rows });
-    a = b;
-  }
-}
-
-function sendBld(): void {
-  MP.blV++;
-  const all = G.B.filter((b) => !b.dead).map((b) => [BKEYS.indexOf(b.t), b.o, b.x, b.y, Math.round(b.hp), b.cap ? 1 : 0]);
-  const per = 80;
-  const n = Math.max(1, Math.ceil(all.length / per));
-  for (let i = 0; i < n; i++) {
-    emitGame('bl', { v: MP.blV, i, n, d: all.slice(i * per, (i + 1) * per) });
-  }
-}
-
-function sendAllies(): void {
-  const pairs: Array<[number, number]> = [];
-  for (let a = 1; a <= G.NN; a++) {
-    for (let b = a + 1; b <= G.NN; b++) {
-      if (isAlly(a, b)) pairs.push([a, b]);
-    }
-  }
-  emitGame('al', pairs);
-}
-
-let alT = 0;
-
-function mpHostTick(dt: number): void {
-  MP.snapT -= dt;
-  if (MP.snapT > 0) return;
-  MP.snapT = G.phase === 'cap' ? 0.12 : 0.25;
-
-  emitGame('ph', { p: G.phase, c: +G.capT.toFixed(1), g: Math.floor(G.gameT), d: G.diff });
-  emitGame(
-    'pl',
-    G.P.slice(1).map((p) => [
-      Math.floor(p!.money),
-      Math.floor(p!.sol),
-      p!.alive ? 1 : 0,
-      p!.sup,
-      p!.dem,
-      Math.round(p!.inc * 10),
-      p!.tiles,
-      p!.human ? 1 : 0,
-    ]),
-  );
-
-  const bands = 4;
-  const rows = Math.ceil(G.H / bands);
-  const y0 = (MP.band % bands) * rows;
-  MP.band++;
-  sendOwn(y0, Math.min(G.H, y0 + rows));
-
-  const pr = G.PR.filter((p) => !p.dead)
-    .slice(0, 45)
-    .map((p) => [
-      p.k === 'm' ? 0 : 1,
-      p.o,
-      +p.sx.toFixed(1),
-      +p.sy.toFixed(1),
-      +p.tx.toFixed(1),
-      +p.ty.toFixed(1),
-      +p.t.toFixed(2),
-      +p.dur.toFixed(2),
-      p.hp || 1,
-    ]);
-  emitGame('pr', pr);
-  emitGame(
-    'un',
-    G.U.filter((u) => !u.dead)
-      .slice(0, 70)
-      .map((u) => [
-        u.id,
-        u.k === 'tank' ? 0 : u.k === 'rpg' ? 1 : 2,
-        u.o,
-        +u.x.toFixed(2),
-        +u.y.toFixed(2),
-        Math.round(u.hp),
-        +(u.a || 0).toFixed(2),
-        +(u.ta || 0).toFixed(2),
-        Math.round(u.max),
-      ]),
-  );
-  if (G.mpFx.length || G.mpBm.length) {
-    emitGame('fx', { a: G.mpFx.slice(0, 30), b: G.mpBm.slice(0, 30) });
-    G.mpFx = [];
-    G.mpBm = [];
-  }
-  MP.blT -= MP.snapT;
-  if (MP.blT <= 0) {
-    MP.blT = 1.0;
-    sendBld();
-  }
-  alT -= MP.snapT;
-  if (alT <= 0) {
-    alT = 0.75;
-    sendAllies();
-  }
-}
-
-export function mpTick(dt: number): void {
-  if (!MP.on) return;
-  if (MP.host) {
-    if (G.phase === 'cap' || G.phase === 'play') mpHostTick(dt);
-  } else if (G.phase === 'cap') {
-    MP.paintT -= dt;
-    if (MP.paintT <= 0 && MP.paintBuf.length) {
-      MP.paintT = 0.1;
-      emitGame('cmd', { c: 'paint', p: MP.paintBuf });
-      MP.paintBuf = [];
-    }
-  }
-}
-
-export function applySnap(topic: string, d: any): void {
-  MP.lastSnap = performance.now();
-  MP.lostShown = false;
-  if (topic === 'ph') {
-    G.capT = d.c;
-    G.gameT = d.g;
-    if (d.p === 'play' && G.phase === 'cap') endCapture();
-  } else if (topic === 'pl' && Array.isArray(d)) {
-    d.forEach((a: number[], i: number) => {
-      const p = G.P[i + 1];
-      if (!p) return;
-      p.money = a[0];
-      p.sol = a[1];
-      p.alive = Boolean(a[2]);
-      p.sup = a[3];
-      p.dem = a[4];
-      p.inc = a[5] / 10;
-      p.tiles = a[6];
-      p.human = Boolean(a[7]);
-      p.eff = p.dem <= p.sup ? 1 : p.sup / p.dem;
-    });
-    if (G.phase === 'play' && !G.P[G.ME]?.alive) {
-      finishGame(false);
-    }
-  } else if (topic === 'al' && Array.isArray(d)) {
-    for (let a = 1; a <= G.NN; a++) G.AL[a]?.fill(0);
-    for (const pair of d) {
-      if (Array.isArray(pair) && G.AL[pair[0]] && G.AL[pair[1]]) {
-        G.AL[pair[0]][pair[1]] = 1;
-        G.AL[pair[1]][pair[0]] = 1;
-      }
-    }
-    simHooks.dipRefresh?.();
-  } else if (topic === 'ow') {
-    (d.r as string[]).forEach((row, j) => {
-      const y = d.y + j;
-      if (y >= G.H) return;
-      let x = 0;
-      for (const seg of row.split(',')) {
-        const q = seg.split(':');
-        const v = +q[0];
-        const c = +q[1];
-        for (let i = 0; i < c && x < G.W; i++) G.OWN[y * G.W + x++] = v;
-      }
-    });
-    G.ownDirty = true;
-    G.tilesDirty = true;
-  } else if (topic === 'bl') {
-    if (!MP.blBuf || MP.blBuf.v !== d.v) MP.blBuf = { v: d.v, n: d.n, got: {} };
-    MP.blBuf.got[d.i] = d.d;
-    if (Object.keys(MP.blBuf.got).length >= MP.blBuf.n) {
-      const nb: Building[] = [];
-      for (let i = 0; i < MP.blBuf.n; i++) {
-        const rows = (MP.blBuf.got[i] || []) as number[][];
-        for (const a of rows) {
-          const t: string | undefined = BKEYS[a[0]];
-          if (!t && a[5] !== 1) continue;
-          const cap = Boolean(a[5]);
-          const bType = t || 'city';
-          if (!BT[bType]) continue;
-          const m = cap ? 300 : BT[bType].hp;
-          nb.push({ t: bType, o: a[1], x: a[2], y: a[3], hp: a[4], max: m, cap, cd: 0, dead: false });
-        }
-      }
-      G.B = nb;
-      G.BLD.fill(-1);
-      G.B.forEach((b, i) => {
-        G.BLD[b.y * G.W + b.x] = i;
-      });
-      MP.blBuf = null;
-      for (let k = 1; k <= G.NN; k++) if (G.P[k]) G.P[k]!.cnt = {};
-      for (const b of G.B) {
-        if (b.o && G.P[b.o]) {
-          const c = G.P[b.o]!.cnt;
-          c[b.t] = (c[b.t] || 0) + 1;
-        }
-      }
-      if (G.selB) {
-        const idx = G.BLD[G.selB.y * G.W + G.selB.x];
-        G.selB = idx >= 0 ? G.B[idx] : null;
-        if (!G.selB) simHooks.closeInfo?.();
-      }
-    }
-  } else if (topic === 'pr' && Array.isArray(d)) {
-    G.PR = d.map((a: number[]) => ({
-      k: a[0] ? 'd' : 'm',
-      o: a[1],
-      sx: a[2],
-      sy: a[3],
-      tx: a[4],
-      ty: a[5],
-      t: a[6],
-      dur: a[7],
-      hp: a[8],
-      x: a[2],
-      y: a[3],
-      w: 0,
-      dead: false,
-    }));
-  } else if (topic === 'un' && Array.isArray(d)) {
-    const seen = new Set<number>();
-    const KN: Array<'tank' | 'rpg' | 'plane'> = ['tank', 'rpg', 'plane'];
-    for (const a of d) {
-      seen.add(a[0]);
-      let u = G.U.find((q) => q.id === a[0]);
-      if (!u) {
-        u = {
-          id: a[0],
-          k: KN[a[1]] || 'tank',
-          o: a[2],
-          x: a[3],
-          y: a[4],
-          hp: a[5],
-          max: a[8],
-          a: a[6],
-          ta: a[7],
-          dead: false,
-          cd: 0,
-          scan: 0,
-          cap: 0,
-          hold: false,
-          wp: null,
-          f: null,
-        };
-        G.U.push(u);
-      }
-      u.sx = a[3];
-      u.sy = a[4];
-      u.hp = a[5];
-      u.max = a[8];
-      u.sa = a[6];
-      u.sta = a[7];
-      u.o = a[2];
-    }
-    G.U = G.U.filter((u) => seen.has(u.id));
-  } else if (topic === 'fx') {
-    for (const a of d.a || []) boom(a[0], a[1], a[2], 0);
-    for (const a of d.b || []) G.BM.push({ x1: a[0], y1: a[1], x2: a[2], y2: a[3], life: 0.18, c: '#9ff' });
-  } else if (topic === 'end') {
-    const winners: number[] = Array.isArray(d?.winners) ? d.winners : [];
-    const win = winners.includes(G.ME) || Boolean(G.P[G.ME]?.alive);
-    finishGame(win);
-  } else if (topic === 'host_left') {
-    if (G.phase === 'play' || G.phase === 'cap') {
-      G.mpNotice = 'Хост покинул игру';
-      finishGame(false);
-    }
-  }
-}
-
-export function onHostCmd(fromPeer: string, data: any): void {
-  if (!MP.host || !MP.on) return;
-  const d = data || {};
-  const s = MP.slots[fromPeer];
-  if (!s || !G.P[s]?.alive) return;
-
-  if (d.c === 'paint') {
-    if (G.phase === 'cap' && Array.isArray(d.p)) {
-      for (const q of d.p.slice(0, 80)) {
-        if (Array.isArray(q) && Number.isFinite(+q[0]) && Number.isFinite(+q[1])) {
-          paintAt(s, +q[0], +q[1], 1.6);
-        }
-      }
-    }
-    return;
-  }
-
-  if (G.phase !== 'play') return;
-  const n = (v: unknown) => Math.floor(Number(v));
-  const f = (v: unknown) => Number(v);
-  let e = '';
-
-  if (d.c === 'place' && BT[d.t] && Number.isFinite(f(d.x)) && Number.isFinite(f(d.y))) {
-    e = place(s, d.t, n(d.x), n(d.y));
-  } else if (d.c === 'missile' && Number.isFinite(f(d.tx)) && Number.isFinite(f(d.ty))) {
-    e = launchMissile(s, f(d.tx), f(d.ty));
-  } else if (d.c === 'drone' && Number.isFinite(f(d.tx)) && Number.isFinite(f(d.ty))) {
-    e = launchDrones(s, f(d.tx), f(d.ty));
-  } else if (d.c === 'assault' && Number.isFinite(f(d.x)) && Number.isFinite(f(d.y))) {
-    e = assault(s, n(d.x), n(d.y));
-  } else if (d.c === 'tank' && Number.isFinite(f(d.x)) && Number.isFinite(f(d.y))) {
-    e = orderGround(s, 'tank', n(d.x), n(d.y), 'factory');
-  } else if (d.c === 'rpg' && Number.isFinite(f(d.x)) && Number.isFinite(f(d.y))) {
-    e = orderGround(s, 'rpg', n(d.x), n(d.y), 'barracks');
-  } else if (d.c === 'plane' && Number.isFinite(f(d.tx)) && Number.isFinite(f(d.ty))) {
-    e = orderPlane(s, f(d.tx), f(d.ty));
-  } else if (d.c === 'repair' && Number.isFinite(f(d.x)) && Number.isFinite(f(d.y))) {
-    const bi = G.BLD[n(d.y) * G.W + n(d.x)];
-    const b = bi >= 0 ? G.B[bi] : null;
-    if (!b || b.o !== s) e = 'Это не ваше здание';
-    else if (b.hp >= b.max) e = 'Здание целое';
-    else {
-      const c = Math.ceil((b.max - b.hp) * 0.5);
-      if (G.P[s]!.money < c) e = `Не хватает денег: ${c}`;
-      else {
-        G.P[s]!.money -= c;
-        b.hp = b.max;
-      }
-    }
-  } else if (d.c === 'ally_propose' && Number.isFinite(f(d.k))) {
-    e = proposeAlliance(s, n(d.k));
-  } else if (d.c === 'ally_break' && Number.isFinite(f(d.k))) {
-    breakAlliance(s, n(d.k));
-  } else if (d.c === 'ally_aid' && Number.isFinite(f(d.k)) && typeof d.id === 'string') {
-    e = sendAid(s, n(d.k), d.id);
-  }
-
-  if (e) emitGame('msg', { to: fromPeer, m: e });
-}
-
-export function updateClient(dt: number): void {
-  if (G.phase === 'cap') G.capT = Math.max(0, G.capT - dt);
-  for (const p of G.PR) {
-    p.t += dt / p.dur;
-    const t = Math.min(1, Math.max(0, p.t));
-    p.x = p.sx + (p.tx - p.sx) * t;
-    p.y = p.sy + (p.ty - p.sy) * t;
-    if (p.k === 'd') p.x += Math.sin(performance.now() / 160 + p.sx) * 0.15;
-  }
-  for (const u of G.U) {
-    if (u.sx === undefined || u.sy === undefined || u.sa === undefined || u.sta === undefined) continue;
-    const k = Math.min(1, dt * 7);
-    u.x += (u.sx - u.x) * k;
-    u.y += (u.sy - u.y) * k;
-    let da = u.sa - u.a;
-    while (da > Math.PI) da -= 6.283;
-    while (da < -Math.PI) da += 6.283;
-    u.a += da * k;
-    u.ta = u.sta;
-  }
-  let inc: 'm' | 'd' | null = null;
-  for (const p of G.PR) {
-    if (p.o !== G.ME && p.t > 0.05 && p.t < 1) {
-      const tx = Math.floor(p.tx);
-      const ty = Math.floor(p.ty);
-      if (tx >= 0 && ty >= 0 && tx < G.W && ty < G.H && G.OWN[ty * G.W + tx] === G.ME) inc = p.k;
-    }
-  }
-  if (inc) {
-    G.alarmT = 1.2;
-    G.alarmK = inc;
-  } else {
-    G.alarmT -= dt;
-  }
-  for (const r of G.EF) r.life -= dt;
-  G.EF = G.EF.filter((r) => r.life > 0);
-  for (const p of G.PT) {
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    p.life -= dt;
-  }
-  G.PT = G.PT.filter((p) => p.life > 0);
-  for (const b of G.BM) b.life -= dt;
-  G.BM = G.BM.filter((b) => b.life > 0);
-  G.shake *= Math.pow(0.02, dt);
-
-  if (G.phase === 'play' && MP.lastSnap && performance.now() - MP.lastSnap > 12000 && !MP.lostShown) {
-    MP.lostShown = true;
-    G.mpNotice = 'Связь с хостом потеряна';
-    finishGame(false);
-  }
 }

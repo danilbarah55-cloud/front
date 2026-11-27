@@ -1,13 +1,91 @@
-import { useEffect } from 'react';
+import { Component, type ReactNode, useEffect, useState } from 'react';
 import { bootGame } from './game/ui.ts';
 
+interface BoundaryState {
+  error: string | null;
+}
+
+class GameErrorBoundary extends Component<{ children: ReactNode }, BoundaryState> {
+  state: BoundaryState = { error: null };
+
+  static getDerivedStateFromError(err: unknown): BoundaryState {
+    return { error: err instanceof Error ? err.message : 'Неизвестная ошибка интерфейса' };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div
+          style={{
+            minHeight: '100dvh',
+            background: '#0a0f1d',
+            color: '#edf2ff',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 24,
+            textAlign: 'center',
+            fontFamily: 'system-ui, sans-serif',
+          }}
+        >
+          <h2 style={{ color: '#f6c744', marginBottom: 12 }}>Ошибка запуска игры</h2>
+          <p style={{ maxWidth: 460, opacity: 0.85, marginBottom: 18 }}>{this.state.error}</p>
+          <button
+            onClick={() => location.reload()}
+            style={{
+              padding: '12px 22px',
+              background: '#f6c744',
+              color: '#1a1405',
+              border: 0,
+              fontWeight: 700,
+              cursor: 'pointer',
+            }}
+          >
+            Перезагрузить
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
+  const [bootErr, setBootErr] = useState<string | null>(null);
+
   useEffect(() => {
-    return bootGame();
+    (window as unknown as { __PF_MOUNTED?: boolean }).__PF_MOUNTED = true;
+    try {
+      return bootGame();
+    } catch (err) {
+      setBootErr(err instanceof Error ? err.message : 'Ошибка инициализации');
+    }
   }, []);
 
+  if (bootErr) {
+    return (
+      <div
+        style={{
+          minHeight: '100dvh',
+          background: '#0a0f1d',
+          color: '#edf2ff',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 24,
+          textAlign: 'center',
+        }}
+      >
+        <h2 style={{ color: '#f6c744', marginBottom: 12 }}>Не удалось запустить игру</h2>
+        <p style={{ maxWidth: 460, opacity: 0.85 }}>{bootErr}</p>
+      </div>
+    );
+  }
+
   return (
-    <>
+    <GameErrorBoundary>
       <div id="app">
         <div id="hud">
           <button className="hb" id="bMenu" aria-label="Меню">
@@ -102,11 +180,6 @@ export default function App() {
                 <path d="M2 12l5-4 4 2 3-2 4 3 4-2M5 11l5 6 3-2 1 2 3-3M2 12v5h3M22 11v5h-3" />
               </svg>
             </button>
-            <button className="cb" id="bChat" aria-label="Чат" hidden>
-              <svg className="ic" viewBox="0 0 24 24">
-                <path d="M4 5h16v11H10l-5 4v-4H4z" />
-              </svg>
-            </button>
           </div>
           <div id="rank" hidden></div>
           <div id="count" hidden>
@@ -138,13 +211,6 @@ export default function App() {
             <button id="infX">Закрыть</button>
           </div>
           <div id="hint"></div>
-          <div id="chatBox" hidden>
-            <div id="chatLog"></div>
-            <div id="chatRow">
-              <input id="chatInput" maxLength={120} placeholder="Сообщение…" autoComplete="off" />
-              <button id="chatSend">➤</button>
-            </div>
-          </div>
         </div>
         <div id="bar"></div>
       </div>
@@ -159,6 +225,6 @@ export default function App() {
       </div>
       <div id="load" hidden></div>
       <div id="toast"></div>
-    </>
+    </GameErrorBoundary>
   );
 }

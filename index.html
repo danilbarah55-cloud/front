@@ -13,8 +13,27 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&family=Press+Start+2P&display=swap" rel="stylesheet" />
   </head>
-  <body>
+  <body style="margin:0;background:#0a0f1d;color:#edf2ff">
+    <noscript>
+      <div style="padding:24px;text-align:center;font-family:sans-serif">
+        Для запуска игры «Пиксельный фронт» включите JavaScript.
+      </div>
+    </noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      setTimeout(function () {
+        if (window.__PF_MOUNTED) return;
+        var root = document.getElementById('root');
+        if (!root || root.childElementCount > 0) return;
+        root.innerHTML =
+          '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;font-family:system-ui,sans-serif;background:#0a0f1d;color:#edf2ff">' +
+          '<div style="max-width:460px;background:#12192c;border:2px solid #2b385f;padding:20px">' +
+          '<h2 style="margin:0 0 10px;color:#f6c744">Пиксельный фронт</h2>' +
+          '<p style="margin:0 0 10px;line-height:1.45">Скрипт приложения не загрузился.</p>' +
+          '<p style="margin:0;font-size:13px;color:#93a3c7;line-height:1.45">Если вы открыли репозиторий на GitHub Pages напрямую из исходников, включите публикацию через <b>GitHub Actions</b> (файл <code>.github/workflows/deploy.yml</code> уже добавлен) или соберите проект командой <code>npm run build</code>.</p>' +
+          '</div></div>';
+      }, 3500);
+    </script>
   </body>
 </html>

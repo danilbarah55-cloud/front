@@ -27,12 +27,13 @@ import {
   claimTask,
   fetchLeaderboard,
   PF,
+  probeBackend,
   resetPF,
   savePF,
-  setOnAuthChange,
   setPfNotify,
   skinBuy,
   statGet,
+  storageMode,
   supabaseEnabled,
   taskDone,
   techBuy,
@@ -41,30 +42,6 @@ import {
   upBuy,
   upLv,
 } from './profile.ts';
-import {
-  connectWs,
-  createParty,
-  emitGame,
-  getWsStatusText,
-  joinParty,
-  joinQuickQueue,
-  kickPartyMember,
-  leaveParty,
-  leaveQuickQueue,
-  MP,
-  partyState,
-  queueActive,
-  queueCount,
-  returnPartyToLobby,
-  sendPartyChat,
-  setNetworkHooks,
-  startPartyMatch,
-  syncWsAuth,
-  updateParty,
-  type GameStartPayload,
-  type PartyChatEntry,
-  type PartyState,
-} from './network.ts';
 import {
   allocWorld,
   clampCam,
@@ -94,7 +71,6 @@ import {
   aidCost,
   allyCount,
   allyErr,
-  applySnap,
   assaultInfo,
   breakAlliance,
   defenseAt,
@@ -103,10 +79,8 @@ import {
   finishGame,
   maxAllies,
   mkField,
-  mpTick,
   nearestB,
   newGame,
-  onHostCmd,
   paintMe,
   pairKey,
   pct,
@@ -116,7 +90,6 @@ import {
   sendAid,
   setAlly,
   setSimHooks,
-  updateClient,
   updateWorld,
   type EndReward,
 } from './simulation.ts';
@@ -549,9 +522,7 @@ export function hud(): void {
   const landBar = $('landBar');
   if (landBar) landBar.style.width = `${Math.min(100, lp)}%`;
 
-  const bChat = $('bChat');
   const bDip = $('bDip');
-  if (bChat) bChat.hidden = !MP.on;
   if (bDip) bDip.hidden = false;
   tutTick();
 
@@ -613,7 +584,7 @@ function drawRank(): void {
         (k) =>
           `<div data-k="${k}" class="${G.P[k]!.alive ? '' : 'dead'}"><i style="background:${G.CS[k]}"></i><span>${
             ids.indexOf(k) + 1
-          }. ${esc(nameOf(k))}${isAlly(G.ME, k) ? ' ★' : ''}${G.P[k]!.human && k !== G.ME ? ' ●' : ''}</span><b>${pct(
+          }. ${esc(nameOf(k))}${isAlly(G.ME, k) ? ' ★' : ''}</span><b>${pct(
             k,
           )}%</b></div>`,
       )
@@ -662,10 +633,9 @@ function drawDip(): void {
   for (const k of ks) {
     const al = isAlly(G.ME, k);
     const pc = pct(k);
-    const hum = G.P[k]?.human ? ' (игрок)' : '';
     h += `<div class="dr${al ? ' al' : ''}"><div class="dl"><i style="background:${G.CS[k]}"></i><div><b>${esc(
       G.NAMES[k],
-    )}${hum}</b><span>${pc}% суши · ${al ? 'союзник' : `отношение ${relWord(relGet(k, G.ME))}`}</span></div></div><div class="db">${
+    )}</b><span>${pc}% суши · ${al ? 'союзник' : `отношение ${relWord(relGet(k, G.ME))}`}</span></div></div><div class="db">${
       al
         ? `<button data-a="aid" data-k="${k}">Помощь</button><button data-a="brk" data-k="${k}" class="warn">Разорвать</button>`
         : `<button data-a="pro" data-k="${k}" class="gold">Союз</button>`
@@ -707,24 +677,14 @@ function drawDip(): void {
       const a = b.dataset.a;
       let m = '';
       if (a === 'pro') {
-        if (MP.on && !MP.host) {
-          emitGame('cmd', { c: 'ally_propose', k });
-          toast('Запрос на союз отправлен');
-        } else {
-          m = proposeAlliance(G.ME, k);
-          if (!m) toast(`Союз с ${G.NAMES[k]} заключён`);
-        }
+        m = proposeAlliance(G.ME, k);
+        if (!m) toast(`Союз с ${G.NAMES[k]} заключён`);
       } else if (a === 'aid') {
         G.dipOpen = G.dipOpen === k ? 0 : k;
       } else if (a === 'give') {
         const aidId = b.dataset.id || '';
-        if (MP.on && !MP.host) {
-          emitGame('cmd', { c: 'ally_aid', k, id: aidId });
-          toast(`Помощь отправлена: ${G.NAMES[k]}`);
-        } else {
-          m = sendAid(G.ME, k, aidId);
-          if (!m) toast(`Помощь отправлена: ${G.NAMES[k]}`);
-        }
+        m = sendAid(G.ME, k, aidId);
+        if (!m) toast(`Помощь отправлена: ${G.NAMES[k]}`);
       } else if (a === 'brk') {
         if (b.dataset.arm !== '1') {
           b.dataset.arm = '1';
@@ -737,11 +697,7 @@ function drawDip(): void {
           }, 3000);
           return;
         }
-        if (MP.on && !MP.host) {
-          emitGame('cmd', { c: 'ally_break', k });
-        } else {
-          breakAlliance(G.ME, k);
-        }
+        breakAlliance(G.ME, k);
         toast(`Союз с ${G.NAMES[k]} расторгнут`);
       }
       if (m) toast(m);
@@ -758,33 +714,7 @@ function sndIcon(): void {
   if (w) w.style.display = G.sndOn ? '' : 'none';
 }
 
-function chatAdd(who: string, text: string, remote = false): void {
-  const log = $('chatLog');
-  if (!log) return;
-  const d = document.createElement('div');
-  const b = document.createElement('b');
-  b.textContent = `${who}: `;
-  d.appendChild(b);
-  d.appendChild(document.createTextNode(text));
-  log.appendChild(d);
-  while (log.children.length > 60) log.removeChild(log.firstChild!);
-  log.scrollTop = log.scrollHeight;
-  const box = $('chatBox');
-  if (remote && box && box.hidden) toast(`${who}: ${text}`);
-}
-
-function chatSend(): void {
-  const inp = $<HTMLInputElement>('chatInput');
-  if (!inp) return;
-  const t = inp.value.trim().slice(0, 120);
-  if (!t) return;
-  inp.value = '';
-  const nm = ACC ? ACC.name : 'Игрок';
-  chatAdd('Вы', t);
-  emitGame('chat', { n: nm, t });
-}
-
-/* ---- Screens: Auth, Home, Setup, Campaign, Online & Party, Shop, Tasks, Ach, Settings ---- */
+/* ---- Screens: Auth, Home, Setup, Campaign, Leaderboard, Shop, Tasks, Ach, Settings ---- */
 
 const IC = {
   play: '<svg class="ic f" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg>',
@@ -826,7 +756,6 @@ function afterLogin(): void {
   const q0 = G.TS;
   applySettings();
   if (G.TS !== q0 && G.tilesSeed >= 0) paintTerrain();
-  syncWsAuth();
   showHome();
 }
 
@@ -850,16 +779,24 @@ function offerTutorial(): void {
   );
 }
 
+function authDbStatusText(): string {
+  if (supabaseEnabled) {
+    return 'Облачное сохранение через Supabase подключено.';
+  }
+  if (storageMode === 'local') {
+    return 'Локальное сохранение в браузере активно (автономный режим).';
+  }
+  return 'Сохранение прогресса на сервере активно (для облака Supabase нужны только SUPABASE_URL и SUPABASE_ANON_KEY).';
+}
+
 function showAuth(mode: 'in' | 'up' = 'up'): void {
   homeBackdrop();
   const up = mode === 'up';
-  const dbLabel = supabaseEnabled
-    ? 'Облачное сохранение через Supabase подключено.'
-    : 'Сохранение прогресса на сервере активно (для облака Supabase задайте переменные в Secrets).';
+  const dbLabel = authDbStatusText();
 
   scr(
     '',
-    `<div class="auth"><div class="logo"><h1>ПИКСЕЛЬНЫЙ<br>ФРОНТ</h1><p>Войдите, чтобы сохранять прогресс и играть с друзьями</p></div>
+    `<div class="auth"><div class="logo"><h1>ПИКСЕЛЬНЫЙ<br>ФРОНТ</h1><p>Войдите, чтобы сохранять прогресс и рейтинг</p></div>
     <div class="tabs"><button id="aIn" class="${up ? '' : 'on'}">Вход</button><button id="aUp" class="${up ? 'on' : ''}">Регистрация</button></div>
     <div class="blk"><label class="fld"><span>Имя игрока</span><input id="aName" maxlength="16" autocomplete="username" autocapitalize="off" spellcheck="false"></label>
     <label class="fld"><span>Пароль</span><input id="aPass" type="password" autocomplete="${up ? 'new-password' : 'current-password'}"></label>
@@ -935,7 +872,7 @@ function showHome(): void {
       <button class="play" id="mPlay">${IC.play}<div><b>Играть</b><span>Королевская битва: до 64 стран</span></div></button>
       <div class="tiles">
         <button class="tile" id="mCamp">${IC.camp}<b>Кампания</b><span>14 уровней и звёзды</span></button>
-        <button class="tile blue" id="mOnl">${IC.net}<b>Пати и онлайн</b><span>Пати с друзьями, быстрый матч</span></button>
+        <button class="tile blue" id="mTop">${IC.net}<b>Лидерборд</b><span>Рейтинг лучших игроков</span></button>
         <button class="tile" id="mShop">${IC.shop}<b>Магазин</b><span>Улучшения, технологии, скины</span></button>
         <button class="tile" id="mTask">${IC.task}${cl ? `<u>${cl}</u>` : ''}<b>Задания</b><span>Три новых каждый день</span></button>
         <button class="tile" id="mAch">${IC.ach}<b>Достижения</b><span>${ACH.filter((a) => PF.ach[a.id]).length} из ${ACH.length}</span></button>
@@ -949,7 +886,7 @@ function showHome(): void {
 
   $('mPlay')!.onclick = showSetup;
   $('mCamp')!.onclick = showCampaign;
-  $('mOnl')!.onclick = () => showOnline();
+  $('mTop')!.onclick = showLeaderboard;
   $('mShop')!.onclick = () => showShop('up');
   $('mTask')!.onclick = showTasks;
   $('mAch')!.onclick = showAch;
@@ -1161,7 +1098,6 @@ function startBattle(cfg: any): void {
     TUTF.tapped = false;
   }
   loading('Генерируем карту…', () => {
-    MP.on = false;
     newGame(cfg);
     $('dipBox')!.hidden = true;
     $('bDip')!.classList.remove('on');
@@ -1239,391 +1175,37 @@ function showLevelIntro(i: number): void {
   $('go')!.onclick = () => startBattle(levelCfg(i));
 }
 
-/* ---- Online, Party Lobby & Leaderboard ---- */
+/* ---- Leaderboard ---- */
 
-let partyModeChoice: 'coop' | 'ffa' = 'coop';
-let quickQueueTimer: ReturnType<typeof setTimeout> | null = null;
-
-function startQuickMatch(): void {
-  void joinQuickQueue(PF.color, PF.skin).then((ok) => {
-    if (!ok) {
-      toast('Нет связи с сервером');
-      return;
-    }
-    card(
-      'ПОИСК МАТЧА',
-      `<p id="qSt">Ищем соперников…</p><p style="font-size:13px;color:var(--dim)">Игра начнётся автоматически, как только найдутся игроки. Свободные страны займёт ИИ.</p><div id="qAiBox"></div>`,
-      'Отмена',
-      () => {
-        leaveQuickQueue();
-        if (quickQueueTimer) clearTimeout(quickQueueTimer);
-        $('ov')!.hidden = true;
-      },
-    );
-    if (quickQueueTimer) clearTimeout(quickQueueTimer);
-    quickQueueTimer = setTimeout(() => {
-      if (!queueActive) return;
-      const bx = $('qAiBox');
-      if (bx) {
-        bx.innerHTML =
-          '<p style="font-size:13px">Пока никого нет в очереди. Можно подождать ещё или сыграть против ИИ.</p><button class="big" id="qAi">Играть против ИИ</button>';
-        const btn = $('qAi');
-        if (btn) {
-          btn.onclick = () => {
-            leaveQuickQueue();
-            $('ov')!.hidden = true;
-            startBattle({
-              seed: (Math.random() * 1e9) | 0,
-              slot: 1,
-              diff: PF.set.diff,
-              colorId: PF.color,
-              skin: PF.skin,
-            });
-          };
-        }
-      }
-    }, 9000);
-  });
-}
-
-function showOnline(tab: 'play' | 'top' = 'play'): void {
+function showLeaderboard(): void {
   homeBackdrop();
-  void connectWs();
-  const tabs = `<div class="tabs"><button class="${tab === 'play' ? 'on' : ''}" id="onPlay">Игра и Пати</button><button class="${
-    tab === 'top' ? 'on' : ''
-  }" id="onTop">Лидерборд</button></div>`;
-
-  if (tab === 'top') {
-    scr(
-      'Онлайн и Пати',
-      `${tabs}<div class="blk"><h3>Рейтинг игроков</h3><p class="sm" id="lbInfo">Загружаем таблицу лидеров…</p><div id="lbList"></div></div>`,
-      showHome,
-      'online',
-    );
-    $('onPlay')!.onclick = () => showOnline('play');
-    $('onTop')!.onclick = () => showOnline('top');
-    void fetchLeaderboard().then(({ list, supabase }) => {
-      if (curScr !== 'online') return;
-      const info = $('lbInfo');
-      const box = $('lbList');
-      if (info) {
-        info.textContent = supabase
-          ? 'Данные из облачной базы Supabase.'
-          : 'Локальный серверный рейтинг (подключите Supabase для общего облака).';
-      }
-      if (box) {
-        box.innerHTML = list.length
-          ? list
-              .map(
-                (r, idx) =>
-                  `<div class="it"><div><b>#${idx + 1} · ${esc(r.name)}</b><span>Побед: ${r.wins}</span></div><em class="rw">${r.rating}</em></div>`,
-              )
-              .join('')
-          : '<p class="sm">Пока нет записей в рейтинге. Сыграйте первый матч!</p>';
-      }
-    });
-    return;
-  }
-
   scr(
-    'Онлайн и Пати',
-    `${tabs}
-    <div class="blk">
-      <h3>Пати с друзьями</h3>
-      <p class="sm">Создайте пати, отправьте код друзьям, выберите режим (Союзники или Каждый за себя), цвет и запускайте бой вместе.</p>
-      <div class="seg2" id="pmMode"><button data-i="0" class="${partyModeChoice === 'coop' ? 'on' : ''}">Союзники (Кооп)</button><button data-i="1" class="${
-        partyModeChoice === 'ffa' ? 'on' : ''
-      }">Каждый за себя</button></div>
-      <div id="mpBox" style="margin-top:10px">
-        <input id="mpCode" maxlength="12" placeholder="Код пати (необяз.)" autocomplete="off">
-        <button id="mpMake" style="background:var(--gold);color:#1a1405;border-color:var(--gold2)">Создать пати</button>
-      </div>
-      <div id="mpBox2" style="display:flex;gap:6px;margin-top:8px">
-        <input id="mpJoinCode" maxlength="12" placeholder="Введите код пати" autocomplete="off" style="flex:1;min-width:0;min-height:46px;padding:8px;background:#0d1426;color:var(--fg);border:2px solid var(--line);font:600 16px var(--f1);border-radius:0">
-        <button id="mpJoin" style="min-height:46px;padding:0 14px;background:var(--panel3);color:var(--fg);border:2px solid var(--line);font:600 15px var(--f1);cursor:pointer">Войти</button>
-      </div>
-      <p id="mpInfo" class="sm" style="margin-top:8px">Статус: ${getWsStatusText()}</p>
-    </div>
-    <div class="blk">
-      <h3>Быстрый матч</h3>
-      <p class="sm">Автоматический поиск соперников в общей очереди. Свободные страны занимает ИИ.</p>
-      <button class="big blue" id="qm2">Найти матч</button>
-    </div>`,
+    'Лидерборд',
+    `<div class="blk"><h3>Рейтинг игроков</h3><p class="sm" id="lbInfo">Загружаем таблицу лидеров…</p><div id="lbList"></div></div>`,
     showHome,
-    'online',
+    'top',
   );
-
-  $('onPlay')!.onclick = () => showOnline('play');
-  $('onTop')!.onclick = () => showOnline('top');
-  wireSeg('pmMode', (i) => {
-    partyModeChoice = i === 0 ? 'coop' : 'ffa';
-  });
-  $('qm2')!.onclick = startQuickMatch;
-
-  $('mpMake')!.onclick = async () => {
-    const code = ($<HTMLInputElement>('mpCode')?.value || '').trim();
-    const ok = await createParty({
-      code,
-      name: ACC?.name || 'Игрок',
-      color: PF.color,
-      skin: PF.skin,
-      mode: partyModeChoice,
-      size: PF.set.size || 0,
-      diff: PF.set.diff ?? 1,
-    });
-    if (!ok) toast('Нет связи с сервером');
-  };
-
-  $('mpJoin')!.onclick = async () => {
-    const code = ($<HTMLInputElement>('mpJoinCode')?.value || '').trim();
-    if (code.length < 3) {
-      toast('Введите код пати (от 3 символов)');
-      return;
+  void fetchLeaderboard().then(({ list, supabase }) => {
+    if (curScr !== 'top') return;
+    const info = $('lbInfo');
+    const box = $('lbList');
+    if (info) {
+      info.textContent = supabase
+        ? 'Данные из облачной базы Supabase.'
+        : storageMode === 'local'
+          ? 'Локальный рейтинг устройства (подключите Supabase для общего облака).'
+          : 'Локальный серверный рейтинг (подключите Supabase для общего облака).';
     }
-    const ok = await joinParty({
-      code,
-      name: ACC?.name || 'Игрок',
-      color: PF.color,
-      skin: PF.skin,
-    });
-    if (!ok) toast('Нет связи с сервером');
-  };
-}
-
-function appendPartyChatLine(entry: PartyChatEntry): void {
-  const log = $('pChatLog');
-  if (!log) return;
-  const d = document.createElement('div');
-  const b = document.createElement('b');
-  b.textContent = `${entry.name}: `;
-  d.appendChild(b);
-  d.appendChild(document.createTextNode(entry.text));
-  log.appendChild(d);
-  log.scrollTop = log.scrollHeight;
-}
-
-function showPartyLobby(st: PartyState): void {
-  MP.inPartyLobby = true;
-  homeBackdrop();
-  const me = st.members.find((m) => m.peer === MP.myPeer);
-  const isHost = st.hostPeer === MP.myPeer;
-  const takenColors = new Set(st.members.filter((m) => m.peer !== MP.myPeer).map((m) => m.color));
-  const unlockedSkins = SKINS.filter((s) => PF.skins[s.id]);
-  const readyCount = st.members.filter((m) => m.ready).length;
-
-  const membersHtml = st.members
-    .map((m) => {
-      const colHex = (PAL.find((p) => p.id === m.color) || PAL[0]).h;
-      const skName = SKINS.find((s) => s.id === m.skin)?.n || 'Однотонный';
-      const kickBtn =
-        isHost && m.peer !== MP.myPeer
-          ? `<button class="sec" data-kick="${m.peer}" style="min-height:34px;padding:0 10px;width:auto;margin:0;border-color:#8f3b3b;color:#ffb3b3">Кик</button>`
-          : '';
-      return `<div class="party-member${m.ready ? ' ready' : ''}">
-        <i class="pm-dot" style="background:${colHex}"></i>
-        <div class="pm-info">
-          <b>${esc(m.name)}${m.peer === MP.myPeer ? ' (Вы)' : ''}</b>
-          <span>Слот ${m.slot} · ${esc(skName)}</span>
-        </div>
-        <span class="pm-badge">${m.isHost ? 'Лидер' : m.ready ? 'Готов' : 'Ждёт'}</span>
-        ${kickBtn}
-      </div>`;
-    })
-    .join('');
-
-  const colorHtml = PAL.slice(0, 15)
-    .map((p) => {
-      const isMine = (me?.color || PF.color) === p.id;
-      const taken = takenColors.has(p.id);
-      return `<button class="sw${isMine ? ' on' : ''}${taken ? ' taken' : ''}" data-col="${p.id}" style="background:${p.h}" ${
-        taken ? 'disabled' : ''
-      } aria-label="${p.n}"></button>`;
-    })
-    .join('');
-
-  const skinOpts = unlockedSkins
-    .map((s) => `<button data-sk="${s.id}" class="${(me?.skin || PF.skin) === s.id ? 'on' : ''}">${s.n}</button>`)
-    .join('');
-
-  const hostControls = isHost
-    ? `<div class="blk">
-        <h3>Настройки пати</h3>
-        <p class="sm">Режим игры</p>
-        ${seg(['Союзники (Кооп)', 'Каждый за себя'], st.mode === 'coop' ? 0 : 1, 'pMode')}
-        <p class="sm" style="margin-top:8px">Размер карты</p>
-        ${seg(['8 стран', '12 стран', '16 стран'], st.size, 'pSize')}
-        <p class="sm" style="margin-top:8px">Сложность ИИ</p>
-        ${seg(DIFF.map((d) => d.n), st.diff, 'pDiff')}
-      </div>`
-    : `<div class="blk">
-        <h3>Параметры боя</h3>
-        <p class="sm">Режим: <b>${st.mode === 'coop' ? 'Союзники (Кооп)' : 'Каждый за себя'}</b> · Карта: <b>${
-          SIZES[st.size]?.c || 8
-        } стран</b> · ИИ: <b>${DIFF[st.diff]?.n || 'Нормально'}</b></p>
-      </div>`;
-
-  const actionBtn = isHost
-    ? `<button class="big" id="pStart">Начать бой (${st.members.length}/${st.maxPlayers})</button>`
-    : `<button class="big ${me?.ready ? '' : 'blue'}" id="pReady">${me?.ready ? 'Снять готовность' : 'Я готов'}</button>`;
-
-  scr(
-    'Пати-лобби',
-    `<div class="party-code-bar">
-      <div><small style="display:block;font-size:11px;color:var(--dim)">КОД ПАТИ</small><span class="party-code-val">${esc(
-        st.code.toUpperCase(),
-      )}</span></div>
-      <button class="sec" id="pCopy" style="width:auto;margin:0;min-height:40px;padding:0 12px">Копировать</button>
-    </div>
-    <div class="blk">
-      <h3>Участники (${st.members.length} из ${st.maxPlayers} · готовы ${readyCount})</h3>
-      ${membersHtml}
-    </div>
-    ${hostControls}
-    <div class="blk">
-      <h3>Ваш цвет и скин</h3>
-      <div class="sws" id="pSws">${colorHtml}</div>
-      <div class="seg2" id="pSkins" style="margin-top:8px">${skinOpts}</div>
-    </div>
-    <div class="blk">
-      <h3>Чат пати</h3>
-      <div class="party-chat-log" id="pChatLog"></div>
-      <div style="display:flex;gap:6px">
-        <input id="pChatIn" maxlength="120" placeholder="Написать в пати…" autocomplete="off" style="flex:1;min-width:0;min-height:44px;padding:8px;background:#0d1426;color:var(--fg);border:2px solid var(--line);font:600 15px var(--f1);border-radius:0">
-        <button id="pChatSend" style="min-width:52px;min-height:44px;background:var(--gold);color:#1a1405;border:0;font:700 16px var(--f1);cursor:pointer">➤</button>
-      </div>
-    </div>
-    ${actionBtn}
-    <button class="sec" id="pLeave">Покинуть пати</button>`,
-    () => {
-      leaveParty();
-      showOnline();
-    },
-    'party',
-  );
-
-  for (const entry of st.chat) appendPartyChatLine(entry);
-
-  $('pCopy')!.onclick = () => {
-    const codeUp = st.code.toUpperCase();
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard
-        .writeText(codeUp)
-        .then(() => toast(`Код ${codeUp} скопирован`))
-        .catch(() => toast(`Код пати: ${codeUp}`));
-    } else {
-      toast(`Код пати: ${codeUp}`);
+    if (box) {
+      box.innerHTML = list.length
+        ? list
+            .map(
+              (r, idx) =>
+                `<div class="it"><div><b>#${idx + 1} · ${esc(r.name)}</b><span>Побед: ${r.wins}</span></div><em class="rw">${r.rating}</em></div>`,
+            )
+            .join('')
+        : '<p class="sm">Пока нет записей в рейтинге. Сыграйте первый матч!</p>';
     }
-  };
-
-  $('pLeave')!.onclick = () => {
-    leaveParty();
-    showOnline();
-  };
-
-  document.querySelectorAll<HTMLElement>('[data-kick]').forEach((b) => {
-    b.onclick = () => kickPartyMember(b.dataset.kick!);
-  });
-
-  document.querySelectorAll<HTMLElement>('#pSws .sw').forEach((b) => {
-    b.onclick = () => {
-      const col = b.dataset.col!;
-      PF.color = col;
-      savePF();
-      updateParty({ color: col });
-    };
-  });
-
-  document.querySelectorAll<HTMLElement>('#pSkins button').forEach((b) => {
-    b.onclick = () => {
-      const sk = b.dataset.sk!;
-      PF.skin = sk;
-      savePF();
-      updateParty({ skin: sk });
-    };
-  });
-
-  if (isHost) {
-    wireSeg('pMode', (i) => updateParty({ mode: i === 0 ? 'coop' : 'ffa' }));
-    wireSeg('pSize', (i) => updateParty({ size: i }));
-    wireSeg('pDiff', (i) => updateParty({ diff: i }));
-    const startBtn = $('pStart');
-    if (startBtn) {
-      startBtn.onclick = () => {
-        const unready = st.members.filter((m) => !m.isHost && !m.ready);
-        if (unready.length > 0) {
-          toast(`Ждём готовность: ${unready.map((u) => u.name).join(', ')}`);
-          return;
-        }
-        startPartyMatch();
-      };
-    }
-  } else {
-    const rBtn = $('pReady');
-    if (rBtn) {
-      rBtn.onclick = () => updateParty({ ready: !(me?.ready) });
-    }
-  }
-
-  const sendChat = () => {
-    const inp = $<HTMLInputElement>('pChatIn');
-    if (!inp) return;
-    const text = inp.value.trim().slice(0, 120);
-    if (!text) return;
-    inp.value = '';
-    sendPartyChat(text);
-  };
-  $('pChatSend')!.onclick = sendChat;
-  $('pChatIn')!.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      sendChat();
-    }
-  });
-}
-
-function startOnlineMatchFromServer(data: GameStartPayload): void {
-  MP.inPartyLobby = false;
-  MP.on = true;
-  MP.started = true;
-  MP.host = data.hostPeer === MP.myPeer;
-  MP.code = data.code;
-  MP.mode = data.mode;
-  MP.slots = { ...data.slots };
-  MP.paintBuf = [];
-  MP.blBuf = null;
-  MP.lostShown = false;
-
-  const mySlot = MP.slots[MP.myPeer] || 1;
-  const humans = Object.values(MP.slots);
-
-  loading('Запускаем онлайн-бой…', () => {
-    newGame({
-      seed: data.seed,
-      size: data.size || 0,
-      diff: data.diff ?? 1,
-      slot: mySlot,
-      cols: data.cols,
-      skins: data.skins,
-      names: data.names,
-      humans,
-      partyAllies: data.partyAllies,
-      startMoney: 400,
-    });
-    for (const k of humans) {
-      if (G.P[k]) G.P[k]!.human = true;
-    }
-    G.GAMEMODE = 'online';
-    $('dipBox')!.hidden = true;
-    $('bDip')!.classList.remove('on');
-    $('goal')!.className = '';
-    $('scr')!.hidden = true;
-    $('ov')!.hidden = true;
-    buildToolbar();
-    startCapture();
-    MP.snapT = 0;
-    MP.band = 0;
-    MP.blT = 0;
-    MP.lastSnap = performance.now();
   });
 }
 
@@ -1637,7 +1219,7 @@ function showShop(tab: 'up' | 'tc' | 'sk'): void {
   let body = '';
   if (tab === 'up') {
     body =
-      '<p class="sm">Улучшения действуют в боях и кампании. В онлайне они отключены.</p>' +
+      '<p class="sm">Улучшения действуют во всех боях и в кампании.</p>' +
       UPG.map((u) => {
         const l = upLv(u.id);
         const mx = l >= u.max;
@@ -1650,7 +1232,7 @@ function showShop(tab: 'up' | 'tc' | 'sk'): void {
       }).join('');
   } else if (tab === 'tc') {
     body =
-      '<p class="sm">Технологии изучаются один раз и действуют во всех боях и кампании. В онлайне отключены.</p>';
+      '<p class="sm">Технологии изучаются один раз и действуют во всех боях и в кампании.</p>';
     for (const br of TBRANCH) {
       body +=
         `<h3 class="br">${br}</h3>` +
@@ -1866,21 +1448,9 @@ function showSettings(back: () => void): void {
 
 /* ---- Pause & End Game ---- */
 
-function mpLeave(): void {
-  MP.on = false;
-  MP.host = false;
-  MP.started = false;
-  MP.slots = {};
-  MP.paintBuf = [];
-  MP.blBuf = null;
+function leaveToMenu(): void {
   G.ME = 1;
   G.WSEED = null;
-  G.mpNotice = '';
-}
-
-function leaveToMenu(keepParty = false): void {
-  if (!keepParty && (MP.on || partyState)) leaveParty();
-  mpLeave();
   G.paused = false;
   G.phase = 'intro';
   G.MISSION = null;
@@ -1891,20 +1461,15 @@ function leaveToMenu(keepParty = false): void {
   $('goal')!.className = '';
   TUT = { i: 0, shown: -1 };
   refreshTools();
-  if (keepParty && partyState) {
-    if (MP.host) returnPartyToLobby();
-    showPartyLobby(partyState);
-  } else {
-    showHome();
-  }
+  showHome();
 }
 
 function pauseMenu(): void {
   if (G.phase !== 'play' && G.phase !== 'cap') return;
-  if (!MP.on) G.paused = true;
+  G.paused = true;
   card(
     'Пауза',
-    `<p>${MP.on ? 'В онлайне игра идёт без паузы.' : 'Игра на паузе.'}</p>`,
+    '<p>Игра на паузе.</p>',
     'Продолжить',
     () => {
       $('ov')!.hidden = true;
@@ -1918,7 +1483,7 @@ function pauseMenu(): void {
         'Выйти',
         () => {
           $('ov')!.hidden = true;
-          leaveToMenu(false);
+          leaveToMenu();
         },
         'Назад',
         pauseMenu,
@@ -1934,10 +1499,9 @@ function showEnd(win: boolean, r: EndReward): void {
       ? `<div class="stars">${[1, 2, 3].map((n) => `<i class="${n <= r.stars ? 'on' : ''}"></i>`).join('')}</div>`
       : '';
     const tutm = Boolean(G.MISSION && G.MISSION.type === 'tut');
-    const camp = Boolean(G.MISSION && !MP.on && !tutm);
+    const camp = Boolean(G.MISSION && !tutm);
     const nextI = camp && G.MISSION ? G.MISSION.idx + 1 : -1;
     const html =
-      (G.mpNotice ? `<p>${esc(G.mpNotice)}.</p>` : '') +
       `<p>${
         win
           ? camp
@@ -1990,25 +1554,10 @@ function showEnd(win: boolean, r: EndReward): void {
           leaveToMenu();
         },
       );
-    } else if (partyState && partyState.isParty) {
-      card(
-        win ? 'ПОБЕДА' : 'ПОРАЖЕНИЕ',
-        html,
-        'Вернуться в пати',
-        () => {
-          $('ov')!.hidden = true;
-          leaveToMenu(true);
-        },
-        'В меню',
-        () => {
-          $('ov')!.hidden = true;
-          leaveToMenu(false);
-        },
-      );
     } else {
       card(win ? 'ПОБЕДА' : 'ПОРАЖЕНИЕ', html, 'В меню', () => {
         $('ov')!.hidden = true;
-        leaveToMenu(false);
+        leaveToMenu();
       });
     }
   }, 1300);
@@ -2032,7 +1581,7 @@ function startCapture(): void {
   setTool('hand');
   $('hint')!.textContent = '';
   snd(440, 0.15, 'square', 0.05, 880);
-  if (!MP.on) track('games');
+  track('games');
   refreshTools();
   G.paused = false;
 }
@@ -2057,7 +1606,6 @@ export function bootGame(): () => void {
   booted = true;
 
   setPfNotify(toast);
-  setOnAuthChange(() => syncWsAuth());
   setSimHooks({
     toast,
     hud,
@@ -2066,64 +1614,6 @@ export function bootGame(): () => void {
     dipRefresh,
     onEndCapture: onEndCaptureUI,
     onShowEnd: showEnd,
-  });
-
-  setNetworkHooks({
-    onStatusChange: () => {
-      const el = $('mpInfo');
-      if (el) el.textContent = `Статус: ${getWsStatusText()}`;
-    },
-    onQueueState: (cnt) => {
-      const qSt = $('qSt');
-      if (qSt) qSt.textContent = cnt > 1 ? `Найдено игроков: ${cnt}. Собираем матч…` : 'Ищем соперников…';
-    },
-    onQueueMatched: () => {
-      if (quickQueueTimer) clearTimeout(quickQueueTimer);
-      const qSt = $('qSt');
-      if (qSt) qSt.textContent = 'Матч найден! Запускаем бой…';
-    },
-    onAutoStartRequest: () => {
-      startPartyMatch();
-    },
-    onPartyState: (st) => {
-      if (st && st.isParty && !st.started && G.phase === 'intro') {
-        showPartyLobby(st);
-      }
-    },
-    onPartyChat: (entry) => {
-      if (curScr === 'party') appendPartyChatLine(entry);
-    },
-    onPartyError: (msg) => {
-      toast(msg);
-    },
-    onPartyKicked: (reason) => {
-      toast(reason);
-      showOnline();
-    },
-    onGameStart: (data) => {
-      startOnlineMatchFromServer(data);
-    },
-    onPeerLeft: (_peer, slot, name) => {
-      if (MP.host && MP.started && G.P[slot]) {
-        G.P[slot]!.human = false;
-        G.P[slot]!.aiT = 3;
-        const msg = `${name || G.NAMES[slot]} отключился — страной управляет ИИ`;
-        toast(msg);
-        emitGame('msg', { to: '*', m: msg });
-      }
-    },
-    onGameMsg: (topic, from, data) => {
-      if (topic === 'cmd') {
-        onHostCmd(from, data);
-      } else if (topic === 'chat') {
-        chatAdd(String(data?.n || 'Игрок').slice(0, 16), String(data?.t || '').slice(0, 120), true);
-      } else if (topic === 'msg') {
-        if (data?.to === '*' && !MP.host) toast(String(data.m || ''));
-        else if (data?.to === MP.myPeer) toast(String(data.m || ''));
-      } else if (!MP.host && MP.on) {
-        applySnap(topic, data);
-      }
-    },
   });
 
   // Wire HUD buttons
@@ -2202,7 +1692,6 @@ export function bootGame(): () => void {
     offerUI();
   };
   $('bSpd')!.onclick = () => {
-    if (MP.on) return;
     G.speed = G.speed === 1 ? 2 : G.speed === 2 ? 3 : G.speed === 3 ? 5 : 1;
     $('bSpd')!.textContent = `×${G.speed}`;
   };
@@ -2220,19 +1709,6 @@ export function bootGame(): () => void {
     G.camGoal = { cx: c.x + 0.5, cy: c.y + 0.5, z: Math.max(G.fitZ, Math.min(G.cw, G.ch) / 28) };
     snd(520, 0.06, 'square', 0.03);
   };
-  $('bChat')!.onclick = () => {
-    const b = $('chatBox')!;
-    b.hidden = !b.hidden;
-    $('bChat')!.classList.toggle('on', !b.hidden);
-    if (!b.hidden) setTimeout(() => $('chatInput')?.focus(), 30);
-  };
-  $('chatSend')!.onclick = chatSend;
-  $('chatInput')!.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      chatSend();
-    }
-  });
 
   // Canvas & Minimap Pointer Events
   const cvs = $<HTMLCanvasElement>('cv')!;
@@ -2406,7 +1882,7 @@ export function bootGame(): () => void {
   });
 
   const onVis = () => {
-    if (document.hidden && G.phase === 'play' && !MP.on && !G.paused && $('ov')!.hidden) pauseMenu();
+    if (document.hidden && G.phase === 'play' && !G.paused && $('ov')!.hidden) pauseMenu();
   };
   document.addEventListener('visibilitychange', onVis);
 
@@ -2425,7 +1901,6 @@ export function bootGame(): () => void {
   const frame = (t: number) => {
     const dt = Math.min(0.05, (t - lastT) / 1000 || 0);
     lastT = t;
-    mpTick(dt);
     if (G.camGoal) {
       const k = Math.min(1, dt * 3);
       G.cam.cx += (G.camGoal.cx - G.cam.cx) * k;
@@ -2441,20 +1916,16 @@ export function bootGame(): () => void {
       G.cam.cy = G.H / 2 + Math.cos(menuT * 0.17) * 6;
       clampCam();
     }
-    if (!G.paused || MP.on) {
-      if (G.phase === 'play' && (!MP.on || MP.host)) evTick(dt * (MP.on ? 1 : G.speed));
-      if (MP.on && !MP.host) {
-        updateClient(dt);
-      } else {
-        let steps = G.phase === 'play' && !MP.on ? G.speed : 1;
-        if (steps > 1) steps = Math.max(1, Math.min(steps, Math.floor(22 / Math.max(1, upMs))));
-        const t0 = performance.now();
-        for (let i = 0; i < steps; i++) updateWorld(dt);
-        upMs = upMs * 0.9 + ((performance.now() - t0) / steps) * 0.1;
-      }
+    if (!G.paused) {
+      if (G.phase === 'play') evTick(dt * G.speed);
+      let steps = G.phase === 'play' ? G.speed : 1;
+      if (steps > 1) steps = Math.max(1, Math.min(steps, Math.floor(22 / Math.max(1, upMs))));
+      const t0 = performance.now();
+      for (let i = 0; i < steps; i++) updateWorld(dt);
+      upMs = upMs * 0.9 + ((performance.now() - t0) / steps) * 0.1;
     }
     if (G.phase === 'cap') {
-      if (!MP.on || MP.host) recount();
+      recount();
       hud();
       const cT = $('cT');
       const cB = $('cB');
@@ -2479,12 +1950,15 @@ export function bootGame(): () => void {
   paintTerrain();
   newGame({ seed: sd, paint: false });
   showAuth('up');
-  void connectWs();
-  void accAuto().then((auto) => {
-    if (auto) {
-      autoQ();
-      afterLogin();
-    }
+  void probeBackend().then(() => {
+    const cl = $('aCl');
+    if (cl && curScr === 'auth') cl.textContent = authDbStatusText();
+    void accAuto().then((auto) => {
+      if (auto) {
+        autoQ();
+        afterLogin();
+      }
+    });
   });
   hud();
   const hudTimer = setInterval(hud, 250);

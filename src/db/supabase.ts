@@ -14,40 +14,8 @@ export interface PlayerRecord {
   updated_at: string;
 }
 
-export interface PartyMemberRecord {
-  peer: string;
-  slug: string;
-  name: string;
-  slot: number;
-  color: string;
-  skin: string;
-  ready: boolean;
-  isHost: boolean;
-}
-
-export interface PartyRecord {
-  code: string;
-  host_slug: string;
-  mode: 'coop' | 'ffa';
-  map_size: number;
-  diff: number;
-  status: 'lobby' | 'playing' | 'ended';
-  members: PartyMemberRecord[];
-  updated_at: string;
-}
-
-export interface MatchRecord {
-  party_code: string | null;
-  mode: string;
-  winner_names: string;
-  duration_sec: number;
-  player_count: number;
-}
-
 interface LocalStore {
   players: Record<string, PlayerRecord>;
-  parties: Record<string, PartyRecord>;
-  matches: MatchRecord[];
 }
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
@@ -57,20 +25,23 @@ let supabase: SupabaseClient | null = null;
 let supabaseReady = false;
 
 function initSupabase() {
-  const url = process.env.SUPABASE_URL?.trim();
+  const url =
+    process.env.SUPABASE_URL?.trim() ||
+    process.env.VITE_SUPABASE_URL?.trim();
   const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-    process.env.SUPABASE_ANON_KEY?.trim();
+    process.env.SUPABASE_ANON_KEY?.trim() ||
+    process.env.VITE_SUPABASE_ANON_KEY?.trim() ||
+    process.env.SUPABASE_KEY?.trim();
 
   if (url && key && url.startsWith('http')) {
     supabase = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
     supabaseReady = true;
-    console.log('[DB] Supabase client initialized');
+    console.log('[DB] Supabase client initialized (ANON_KEY)');
   } else {
     console.log(
-      '[DB] SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set — using local persistent store (.data/pixelfront-db.json)',
+      '[DB] SUPABASE_URL / SUPABASE_ANON_KEY not set — using local persistent store (.data/pixelfront-db.json)',
     );
   }
 }
@@ -84,14 +55,12 @@ function readLocalStore(): LocalStore {
       const parsed = JSON.parse(raw) as Partial<LocalStore>;
       return {
         players: parsed.players && typeof parsed.players === 'object' ? parsed.players : {},
-        parties: parsed.parties && typeof parsed.parties === 'object' ? parsed.parties : {},
-        matches: Array.isArray(parsed.matches) ? parsed.matches : [],
       };
     }
   } catch (err) {
     console.error('[DB] Failed reading local store:', err);
   }
-  return { players: {}, parties: {}, matches: [] };
+  return { players: {} };
 }
 
 function writeLocalStore(store: LocalStore): void {
@@ -231,70 +200,4 @@ export async function getLeaderboardRecords(
     .sort((a, b) => b.rating - a.rating || b.wins - a.wins)
     .slice(0, limit)
     .map((p) => ({ name: p.name, rating: p.rating, wins: p.wins }));
-}
-
-export async function upsertPartyRecord(party: PartyRecord): Promise<void> {
-  const local = readLocalStore();
-  local.parties[party.code] = party;
-  writeLocalStore(local);
-
-  if (supabase) {
-    try {
-      const { error } = await supabase.from('parties').upsert(
-        {
-          code: party.code,
-          host_slug: party.host_slug,
-          mode: party.mode,
-          map_size: party.map_size,
-          diff: party.diff,
-          status: party.status,
-          members: party.members,
-          updated_at: party.updated_at,
-        },
-        { onConflict: 'code' },
-      );
-      if (error) {
-        console.error('[Supabase] upsertPartyRecord error:', error.message);
-      }
-    } catch (err) {
-      console.error('[Supabase] upsertPartyRecord exception:', err);
-    }
-  }
-}
-
-export async function deletePartyRecord(code: string): Promise<void> {
-  const local = readLocalStore();
-  delete local.parties[code];
-  writeLocalStore(local);
-
-  if (supabase) {
-    try {
-      const { error } = await supabase.from('parties').delete().eq('code', code);
-      if (error) {
-        console.error('[Supabase] deletePartyRecord error:', error.message);
-      }
-    } catch (err) {
-      console.error('[Supabase] deletePartyRecord exception:', err);
-    }
-  }
-}
-
-export async function recordMatchResult(match: MatchRecord): Promise<void> {
-  const local = readLocalStore();
-  local.matches.push(match);
-  if (local.matches.length > 200) {
-    local.matches = local.matches.slice(-200);
-  }
-  writeLocalStore(local);
-
-  if (supabase) {
-    try {
-      const { error } = await supabase.from('matches').insert(match);
-      if (error) {
-        console.error('[Supabase] recordMatchResult error:', error.message);
-      }
-    } catch (err) {
-      console.error('[Supabase] recordMatchResult exception:', err);
-    }
-  }
 }

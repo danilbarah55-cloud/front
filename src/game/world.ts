@@ -1,6 +1,5 @@
 import { ALLPAL, BT, SIZES, TRGB } from './constants.ts';
 import { PF, techLv, upLv } from './profile.ts';
-import { MP } from './network.ts';
 
 export interface Building {
   t: string;
@@ -170,11 +169,7 @@ export const G = {
   dipT: 3,
   dipOpen: 0,
 
-  mpFx: [] as Array<[number, number, number]>,
-  mpBm: [] as Array<[number, number, number, number]>,
-  mpNotice: '',
   evT: 60,
-  mpAllies: [] as number[],
 };
 
 export const miniT = document.createElement('canvas');
@@ -281,11 +276,11 @@ export function applyPalette(customNames?: Record<number, string>): void {
 }
 
 export function bonusUp(o: number, id: string): number {
-  return o === G.ME && !MP.on ? upLv(id) : 0;
+  return o === G.ME ? upLv(id) : 0;
 }
 
 export function tk(o: number, id: string): number {
-  return o === G.ME && !MP.on ? techLv(id) : 0;
+  return o === G.ME ? techLv(id) : 0;
 }
 
 export function samR(o: number): number {

@@ -1,5 +1,6 @@
 -- Схема базы данных для игры «Пиксельный фронт» в Supabase (PostgreSQL)
 -- Выполните этот SQL в Supabase -> SQL Editor
+-- Работает с обычным публичным ключом (ANON KEY), SERVICE_ROLE_KEY не требуется!
 
 create table if not exists public.players (
   slug text primary key,
@@ -16,24 +17,8 @@ create table if not exists public.players (
 
 create index if not exists idx_players_rating on public.players (rating desc);
 
-create table if not exists public.parties (
-  code text primary key,
-  host_slug text not null,
-  mode text not null default 'coop', -- 'coop' (союзники) | 'ffa' (каждый сам за себя)
-  map_size integer not null default 0,
-  diff integer not null default 1,
-  status text not null default 'lobby', -- 'lobby' | 'playing' | 'ended'
-  members jsonb not null default '[]'::jsonb,
-  updated_at timestamptz not null default now(),
-  created_at timestamptz not null default now()
-);
+-- Отключаем RLS и выдаём права роли anon, чтобы всё работало по обычному ANON_KEY
+alter table public.players disable row level security;
 
-create table if not exists public.matches (
-  id bigserial primary key,
-  party_code text,
-  mode text not null,
-  winner_names text not null default '',
-  duration_sec integer not null default 0,
-  player_count integer not null default 1,
-  created_at timestamptz not null default now()
-);
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on table public.players to anon, authenticated;
