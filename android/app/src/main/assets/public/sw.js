@@ -78,22 +78,22 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
    */
   workbox.precacheAndRoute([{
     "url": "pwa-maskable-512x512.png",
-    "revision": "3508b886cec14a845b87028e27bfd862"
+    "revision": "3926d080cbbfd4b3455a96565151f4a3"
   }, {
     "url": "pwa-512x512.png",
-    "revision": "9033f8d92b25e8da635d1bd7c8a36853"
+    "revision": "58411ad2fa29d4774a5e96cc34b5101b"
   }, {
     "url": "pwa-192x192.png",
-    "revision": "b6b86c72ca226a564107b79b80792406"
+    "revision": "ecd7c5bb220dcc85f36a317412198322"
   }, {
     "url": "index.html",
-    "revision": "5b727ae7afc1cee556d9222989be9ec5"
+    "revision": "b4deef0ee61017974957737efb375e9c"
   }, {
-    "url": "icon.svg",
-    "revision": "9d640a7a7280310db8dc4b81b2cd4e59"
+    "url": "favicon-32x32.png",
+    "revision": "dafe7c7df9ec08ff4f274ee4c8ec43f6"
   }, {
     "url": "apple-touch-icon.png",
-    "revision": "2de6e9f7cab2a2e1919fdc8d51eb4f3e"
+    "revision": "7829bf28711c0946c297ed351a7931fe"
   }, {
     "url": "assets/workbox-window.prod.es5-Bd17z0YL.js",
     "revision": null
@@ -111,19 +111,19 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
     "revision": null
   }, {
     "url": "apple-touch-icon.png",
-    "revision": "2de6e9f7cab2a2e1919fdc8d51eb4f3e"
+    "revision": "7829bf28711c0946c297ed351a7931fe"
   }, {
-    "url": "icon.svg",
-    "revision": "9d640a7a7280310db8dc4b81b2cd4e59"
+    "url": "favicon-32x32.png",
+    "revision": "dafe7c7df9ec08ff4f274ee4c8ec43f6"
   }, {
     "url": "pwa-192x192.png",
-    "revision": "b6b86c72ca226a564107b79b80792406"
+    "revision": "ecd7c5bb220dcc85f36a317412198322"
   }, {
     "url": "pwa-512x512.png",
-    "revision": "9033f8d92b25e8da635d1bd7c8a36853"
+    "revision": "58411ad2fa29d4774a5e96cc34b5101b"
   }, {
     "url": "pwa-maskable-512x512.png",
-    "revision": "3508b886cec14a845b87028e27bfd862"
+    "revision": "3926d080cbbfd4b3455a96565151f4a3"
   }, {
     "url": "manifest.webmanifest",
     "revision": "089afb0bc4c219423dd279407916b9ea"
