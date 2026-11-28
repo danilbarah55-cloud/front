@@ -218,9 +218,13 @@ function randomSalt(): string {
   return Math.random().toString(36).slice(2, 14);
 }
 
-export async function probeBackend(): Promise<boolean> {
-  if (backendAvailable !== null) return backendAvailable;
-  if (probePromise) return probePromise;
+export async function probeBackend(force = false): Promise<boolean> {
+  if (!force && backendAvailable !== null) return backendAvailable;
+  if (!force && probePromise) return probePromise;
+  if (force) {
+    backendAvailable = null;
+    probePromise = null;
+  }
 
   probePromise = (async () => {
     const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
@@ -239,7 +243,7 @@ export async function probeBackend(): Promise<boolean> {
     }
 
     const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), 1800) : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 2500) : null;
     try {
       const res = await fetch('/api/health', {
         method: 'GET',
@@ -272,7 +276,7 @@ export async function probeBackend(): Promise<boolean> {
   return probePromise;
 }
 
-async function apiFetch(url: string, init: RequestInit = {}) {
+async function apiFetch(url: string, init: RequestInit = {}, timeoutMs = 8000) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'X-Requested-With': 'XMLHttpRequest',
@@ -281,11 +285,57 @@ async function apiFetch(url: string, init: RequestInit = {}) {
   if (authToken) {
     headers.Authorization = `Bearer ${authToken}`;
   }
-  return fetch(url, {
-    ...init,
-    headers,
-    credentials: 'same-origin',
-  });
+  const ctrl = typeof AbortController !== 'undefined' && !init.signal ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    return await fetch(url, {
+      ...init,
+      headers,
+      credentials: 'same-origin',
+      signal: init.signal || ctrl?.signal,
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function parseJsonSafe(res: Response): Promise<{ ok: boolean; data: any }> {
+  try {
+    const text = await res.text();
+    if (!text) return { ok: false, data: null };
+    return { ok: true, data: JSON.parse(text) };
+  } catch {
+    return { ok: false, data: null };
+  }
+}
+
+async function apiAuthRequest(
+  url: string,
+  payload: Record<string, unknown>,
+): Promise<{ ok: true; res: Response; data: any } | { ok: false }> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await apiFetch(url, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      const parsed = await parseJsonSafe(res);
+      if (parsed.ok && res.status < 500) {
+        return { ok: true, res, data: parsed.data };
+      }
+    } catch {
+      // transient network/timeout error
+    }
+    if (attempt === 0) {
+      await new Promise((r) => setTimeout(r, 350));
+      const alive = await probeBackend(true);
+      if (!alive) break;
+    }
+  }
+  backendAvailable = false;
+  storageMode = directSupabase && !supabaseMissingTable ? 'supabase-direct' : 'local';
+  supabaseEnabled = Boolean(directSupabase && !supabaseMissingTable);
+  return { ok: false };
 }
 
 function lsGet<T>(key: string, fallback: T): T {
@@ -508,19 +558,17 @@ export async function accRegister(name: string, password: string, remember: bool
   if (cleanName.length < 2 || slug.length < 2) return 'Имя: от 2 символов, буквы и цифры';
   if (password.length < 4 || password.length > 128) return 'Пароль: от 4 символов';
 
+  let serverFailed = false;
   if (hasServer) {
-    try {
-      const res = await apiFetch('/api/auth/register', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: cleanName,
-          password,
-          remember,
-          initialProfile: mergeDef(DEFPF, {}),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) return data.error || 'Ошибка регистрации';
+    const attempt = await apiAuthRequest('/api/auth/register', {
+      name: cleanName,
+      password,
+      remember,
+      initialProfile: mergeDef(DEFPF, {}),
+    });
+    if (attempt.ok) {
+      const { res, data } = attempt;
+      if (!res.ok) return data?.error || 'Ошибка регистрации';
       authToken = data.token || '';
       storeSessionToken(authToken, remember);
       ACC = data.user;
@@ -537,9 +585,8 @@ export async function accRegister(name: string, password: string, remember: bool
       }
       onAuthChangeFn();
       return '';
-    } catch {
-      return 'Сервер недоступен. Попробуйте ещё раз.';
     }
+    serverFailed = true;
   }
 
   const salt = randomSalt();
@@ -603,6 +650,8 @@ export async function accRegister(name: string, password: string, remember: bool
   else lsDel(LS_ACC);
   if (supabaseMissingTable) {
     notifyFn('Аккаунт сохранён только на этом устройстве: создайте таблицу players в Supabase.');
+  } else if (serverFailed) {
+    notifyFn('Сервер не ответил — аккаунт создан локально на этом устройстве.');
   }
   onAuthChangeFn();
   return '';
@@ -614,14 +663,16 @@ export async function accLogin(name: string, password: string, remember: boolean
   const slug = slugOf(cleanName);
   if (slug.length < 2 || !password) return 'Введите имя и пароль';
 
+  let serverFailed = false;
   if (hasServer) {
-    try {
-      const res = await apiFetch('/api/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ name: cleanName, password, remember }),
-      });
-      const data = await res.json();
-      if (!res.ok) return data.error || 'Ошибка входа';
+    const attempt = await apiAuthRequest('/api/auth/login', {
+      name: cleanName,
+      password,
+      remember,
+    });
+    if (attempt.ok) {
+      const { res, data } = attempt;
+      if (!res.ok) return data?.error || 'Ошибка входа';
       authToken = data.token || '';
       storeSessionToken(authToken, remember);
       ACC = data.user;
@@ -635,9 +686,8 @@ export async function accLogin(name: string, password: string, remember: boolean
       supabaseMissingTable = Boolean(data.missingTable);
       onAuthChangeFn();
       return '';
-    } catch {
-      return 'Сервер недоступен. Попробуйте ещё раз.';
     }
+    serverFailed = true;
   }
 
   if (directSupabase && !supabaseMissingTable) {
@@ -684,7 +734,9 @@ export async function accLogin(name: string, password: string, remember: boolean
 
   const accs = lsGet<Record<string, { slug: string; name: string; salt: string; hash: string }>>(LS_ACCS, {});
   const rec = accs[slug];
-  if (!rec) return 'Аккаунт не найден';
+  if (!rec) {
+    return serverFailed ? 'Сервер недоступен. Попробуйте ещё раз.' : 'Аккаунт не найден';
+  }
   const ok = await verifyClientHash(password, rec.salt, rec.hash);
   if (!ok) return 'Неверный пароль';
   if (!rec.hash.startsWith('pbkdf2$')) {
@@ -695,6 +747,9 @@ export async function accLogin(name: string, password: string, remember: boolean
   syncLoadedProfile(lsGet(LS_PRE + slug, DEFPF));
   if (remember) lsSet(LS_ACC, ACC);
   else lsDel(LS_ACC);
+  if (serverFailed) {
+    notifyFn('Сервер не ответил — загружен локальный профиль.');
+  }
   onAuthChangeFn();
   return '';
 }

@@ -174,6 +174,17 @@ function requireAuth(req: AuthedRequest, res: Response, next: NextFunction): voi
 export function createApiApp(): express.Express {
   const app = express();
   app.set('trust proxy', 1);
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    if (
+      req.method !== 'GET' &&
+      req.method !== 'HEAD' &&
+      Object.prototype.hasOwnProperty.call(req, 'body') &&
+      (req as unknown as { body?: unknown }).body !== undefined
+    ) {
+      (req as unknown as { _body?: boolean })._body = true;
+    }
+    next();
+  });
   app.use(express.json({ limit: '512kb' }));
 
   app.get('/api/health', async (_req, res) => {
@@ -372,6 +383,13 @@ export function createApiApp(): express.Express {
       console.error('[API] Leaderboard error:', err);
       res.status(500).json({ error: 'Не удалось загрузить рейтинг' });
     }
+  });
+
+  app.use((err: { status?: number; message?: string }, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('[API] Unhandled error:', err?.message || err);
+    if (res.headersSent) return;
+    const status = typeof err?.status === 'number' && err.status >= 400 && err.status < 600 ? err.status : 500;
+    res.status(status).json({ error: 'Ошибка сервера. Попробуйте ещё раз.' });
   });
 
   return app;

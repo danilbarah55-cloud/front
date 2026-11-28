@@ -87,7 +87,7 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
     "revision": "b6b86c72ca226a564107b79b80792406"
   }, {
     "url": "index.html",
-    "revision": "01e87e288af3b79e7cf87ca4fc0d112d"
+    "revision": "caa374ed8146f810c3e89e595ae537df"
   }, {
     "url": "icon.svg",
     "revision": "9d640a7a7280310db8dc4b81b2cd4e59"
@@ -98,7 +98,7 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
     "url": "assets/workbox-window.prod.es5-Bd17z0YL.js",
     "revision": null
   }, {
-    "url": "assets/index-DYibmxM0.js",
+    "url": "assets/index-BoCYeABn.js",
     "revision": null
   }, {
     "url": "assets/index-BIy24GVc.css",
@@ -129,7 +129,9 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
     "revision": "089afb0bc4c219423dd279407916b9ea"
   }], {});
   workbox.cleanupOutdatedCaches();
-  workbox.registerRoute(new workbox.NavigationRoute(workbox.createHandlerBoundToURL("index.html")));
+  workbox.registerRoute(new workbox.NavigationRoute(workbox.createHandlerBoundToURL("index.html"), {
+    denylist: [/^\/api\//]
+  }));
   workbox.registerRoute(/^https:\/\/fonts\.googleapis\.com\/.*/i, new workbox.CacheFirst({
     "cacheName": "google-fonts-cache",
     plugins: [new workbox.ExpirationPlugin({
