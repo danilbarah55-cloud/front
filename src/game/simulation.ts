@@ -23,6 +23,7 @@ import {
   applyPalette,
   arcOf,
   bonusUp,
+  clampCam,
   crater,
   G,
   genTiles,
@@ -43,7 +44,11 @@ import {
   ucost,
   type Building,
   type MissionState,
+  type PlayerState,
+  type Projectile,
+  type Rubble,
   type Unit,
+  type Wreck,
 } from './world.ts';
 
 export interface EndReward {
@@ -61,6 +66,7 @@ interface SimHooks {
   dipRefresh?: () => void;
   onEndCapture?: () => void;
   onShowEnd?: (win: boolean, r: EndReward) => void;
+  onClearBattleSave?: () => void;
 }
 
 const simHooks: SimHooks = {};
@@ -218,7 +224,7 @@ export function newGame(cfg: NewGameConfig = {}): void {
       ? skinsMap[k] || 'solid'
       : k === G.ME
         ? cfg.skin || PF.skin
-        : ['solid', 'stripes', 'checker', 'dots', 'camo'][(rng() * 5) | 0];
+        : ['solid', 'solid', 'stripes', 'checker', 'dots', 'camo'][(rng() * 6) | 0];
     const isHuman = humans.includes(k);
     const money = isHuman
       ? cfg.startMoney != null
@@ -614,6 +620,7 @@ export function finishGame(win: boolean): void {
     r.lines.push(`Рейтинг: ${dr > 0 ? '+' : ''}${dr}`);
   }
   addCoins(r.coins);
+  simHooks.onClearBattleSave?.();
   savePF();
   simHooks.onShowEnd?.(win, r);
 }
@@ -1981,4 +1988,247 @@ export function doAct(kind: string, a: { t?: string; x?: number; y?: number; tx?
   if (kind === 'howitzer') return orderGround(me, 'howitzer', a.x!, a.y!, 'factory');
   if (kind === 'plane') return orderPlane(me, a.tx!, a.ty!);
   return '';
+}
+
+export interface SavedBattle {
+  v: 1;
+  savedAt: number;
+  curSize: number;
+  worldSeed: number;
+  seed: number;
+  diff: number;
+  ME: number;
+  GAMEMODE: string;
+  MISSION: MissionState | null;
+  phase: 'cap' | 'play';
+  capT: number;
+  gameT: number;
+  econT: number;
+  alarmT: number;
+  alarmK: 'm' | 'd' | 'n';
+  evT: number;
+  dipT: number;
+  dipOpen: number;
+  uid: number;
+  speed: number;
+  cam: { cx: number; cy: number; z: number };
+  RS: typeof G.RS;
+  ownRle: number[];
+  names: Record<number, string>;
+  P: Array<PlayerState | null>;
+  B: Building[];
+  U: Array<Omit<Unit, 'f' | 'tg'>>;
+  PR: Projectile[];
+  WK: Wreck[];
+  RB: Rubble[];
+  AL: number[][];
+  REL: number[][];
+  DCD: Record<string, number>;
+  GRUDGE: Record<string, number>;
+  OFFER: { from: number; t: number } | null;
+  tut?: { i: number; shown: number; a0: number; tapped: boolean };
+}
+
+function encodeRle(arr: Uint8Array): number[] {
+  const out: number[] = [];
+  if (!arr.length) return out;
+  let cur = arr[0];
+  let cnt = 1;
+  for (let i = 1; i < arr.length; i++) {
+    if (arr[i] === cur) {
+      cnt++;
+    } else {
+      out.push(cur, cnt);
+      cur = arr[i];
+      cnt = 1;
+    }
+  }
+  out.push(cur, cnt);
+  return out;
+}
+
+function decodeRle(rle: number[], target: Uint8Array): void {
+  target.fill(0);
+  let pos = 0;
+  for (let i = 0; i + 1 < rle.length && pos < target.length; i += 2) {
+    const val = Number(rle[i]) || 0;
+    const cnt = Math.max(0, Number(rle[i + 1]) || 0);
+    const end = Math.min(target.length, pos + cnt);
+    target.fill(val, pos, end);
+    pos = end;
+  }
+}
+
+export function exportSavedBattle(tut?: { i: number; shown: number; a0: number; tapped: boolean }): SavedBattle | null {
+  if (G.phase !== 'play' && G.phase !== 'cap') return null;
+  const names: Record<number, string> = {};
+  for (let k = 1; k <= G.NN; k++) {
+    if (G.NAMES[k]) names[k] = G.NAMES[k];
+  }
+  const units: Array<Omit<Unit, 'f' | 'tg'>> = [];
+  for (const u of G.U) {
+    if (u.dead) continue;
+    const { f: _f, tg: _tg, wp: _wp, ...rest } = u;
+    units.push({ ...rest, wp: null });
+  }
+  return {
+    v: 1,
+    savedAt: Date.now(),
+    curSize: G.curSize,
+    worldSeed: G.worldSeed,
+    seed: G.seed,
+    diff: G.diff,
+    ME: G.ME,
+    GAMEMODE: G.GAMEMODE,
+    MISSION: G.MISSION ? { ...G.MISSION } : null,
+    phase: G.phase,
+    capT: G.capT,
+    gameT: G.gameT,
+    econT: G.econT,
+    alarmT: G.alarmT,
+    alarmK: G.alarmK,
+    evT: G.evT,
+    dipT: G.dipT,
+    dipOpen: G.dipOpen,
+    uid: G.uid,
+    speed: G.speed,
+    cam: { cx: G.cam.cx, cy: G.cam.cy, z: G.cam.z },
+    RS: { ...G.RS },
+    ownRle: encodeRle(G.OWN),
+    names,
+    P: G.P.slice(1).map((p) => (p ? { ...p, cnt: { ...p.cnt }, ucnt: { ...p.ucnt } } : null)),
+    B: G.B.filter((b) => !b.dead).map((b) => ({ ...b, born: 0 })),
+    U: units,
+    PR: G.PR.filter((p) => !p.dead).map((p) => ({ ...p })),
+    WK: G.WK.map((w) => ({ ...w })),
+    RB: G.RB.map((r) => ({ ...r })),
+    AL: G.AL.map((row) => Array.from(row)),
+    REL: G.REL.map((row) => Array.from(row)),
+    DCD: { ...G.DCD },
+    GRUDGE: { ...G.GRUDGE },
+    OFFER: G.OFFER ? { ...G.OFFER } : null,
+    tut,
+  };
+}
+
+export function restoreSavedBattle(snap: SavedBattle): { tut?: { i: number; shown: number; a0: number; tapped: boolean } } | null {
+  if (!snap || snap.v !== 1 || snap.worldSeed == null) return null;
+  const sz = Math.max(0, Math.min(4, Number(snap.curSize) || 0));
+  allocWorld(sz);
+  G.tilesSeed = -1;
+  G.worldSeed = snap.worldSeed;
+  G.WSEED = snap.worldSeed;
+  genTiles(snap.worldSeed);
+  paintMini();
+  G.tilesSeed = snap.worldSeed;
+  paintTerrain();
+
+  G.seed = snap.seed || 1;
+  G.diff = snap.diff ?? 1;
+  G.ME = snap.ME || 1;
+  G.GAMEMODE = snap.GAMEMODE || 'battle';
+  G.MISSION = snap.MISSION ? { ...snap.MISSION } : null;
+  G.phase = snap.phase === 'cap' ? 'cap' : 'play';
+  G.capT = snap.capT ?? 0;
+  G.gameT = snap.gameT ?? 0;
+  G.econT = snap.econT ?? 0;
+  G.alarmT = snap.alarmT ?? 0;
+  G.alarmK = snap.alarmK || 'm';
+  G.evT = snap.evT ?? 60;
+  G.dipT = snap.dipT ?? 3;
+  G.dipOpen = snap.dipOpen ?? 0;
+  G.uid = Math.max(1, snap.uid || 1);
+  G.speed = snap.speed || 1;
+  G.RS = {
+    tankKills: snap.RS?.tankKills || 0,
+    rpgKills: snap.RS?.rpgKills || 0,
+    annex: snap.RS?.annex || 0,
+    sam: snap.RS?.sam || 0,
+    built: snap.RS?.built || 0,
+    tanks: snap.RS?.tanks || 0,
+    assaults: snap.RS?.assaults || 0,
+    lost: snap.RS?.lost || 0,
+    shared: Boolean(snap.RS?.shared),
+  };
+
+  decodeRle(snap.ownRle || [], G.OWN);
+
+  G.P = [null];
+  for (let k = 1; k <= G.NN; k++) {
+    const src = snap.P?.[k - 1];
+    G.P.push(
+      src
+        ? {
+            ...src,
+            cnt: { ...(src.cnt || {}) },
+            ucnt: { ...(src.ucnt || {}) },
+          }
+        : null,
+    );
+  }
+  applyPalette(snap.names);
+
+  G.BLD.fill(-1);
+  G.B = [];
+  for (const sb of snap.B || []) {
+    if (sb.x < 0 || sb.y < 0 || sb.x >= G.W || sb.y >= G.H) continue;
+    const b: Building = { ...sb, dead: false, born: 0 };
+    G.BLD[b.y * G.W + b.x] = G.B.length;
+    G.B.push(b);
+  }
+
+  G.U = [];
+  for (const su of snap.U || []) {
+    const u: Unit = {
+      ...su,
+      dead: false,
+      wp: null,
+      tg: null,
+      f: null,
+    };
+    if (u.k !== 'plane' && u.tx != null && u.ty != null) {
+      const f = mkField(Math.floor(u.tx), Math.floor(u.ty), Math.floor(u.x), Math.floor(u.y));
+      if (f && f[Math.floor(u.y) * G.W + Math.floor(u.x)] >= 0) {
+        u.f = f;
+      }
+    }
+    G.U.push(u);
+  }
+
+  G.PR = (snap.PR || []).map((p) => ({ ...p, dead: false }));
+  const now = performance.now();
+  G.WK = (snap.WK || []).map((w) => ({ ...w, t0: now }));
+  G.RB = (snap.RB || []).map((r) => ({ ...r, t0: now }));
+  G.EF = [];
+  G.PT = [];
+  G.BM = [];
+  G.NK = [];
+  G.selB = null;
+  G.brush = null;
+  G.hover = null;
+  G.aim.on = false;
+  G.paused = false;
+
+  dipInit();
+  for (let a = 0; a <= G.NN; a++) {
+    if (snap.AL?.[a]) G.AL[a].set(snap.AL[a].slice(0, G.NN + 1));
+    if (snap.REL?.[a]) G.REL[a].set(snap.REL[a].slice(0, G.NN + 1));
+  }
+  G.DCD = { ...(snap.DCD || {}) };
+  G.GRUDGE = { ...(snap.GRUDGE || {}) };
+  G.OFFER = snap.OFFER ? { ...snap.OFFER } : null;
+
+  G.ownDirty = true;
+  G.tilesDirty = true;
+  recount();
+
+  if (snap.cam) {
+    G.cam.cx = snap.cam.cx;
+    G.cam.cy = snap.cam.cy;
+    G.cam.z = snap.cam.z;
+  }
+  G.camGoal = null;
+  clampCam();
+  simHooks.offerUI?.();
+  return { tut: snap.tut };
 }

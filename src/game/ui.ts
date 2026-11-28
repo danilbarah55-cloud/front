@@ -28,11 +28,15 @@ import {
   accLogout,
   accRegister,
   claimTask,
+  clearBattleSave,
   fetchLeaderboard,
+  flushPF,
+  getBattleSave,
   PF,
   probeBackend,
   resetPF,
   savePF,
+  setBattleSave,
   setPfNotify,
   skinBuy,
   statGet,
@@ -78,9 +82,11 @@ import {
   allyErr,
   assaultInfo,
   breakAlliance,
+  canPlace,
   defenseAt,
   doAct,
   evTick,
+  exportSavedBattle,
   finishGame,
   maxAllies,
   mkField,
@@ -92,11 +98,13 @@ import {
   proposeAlliance,
   recount,
   relGet,
+  restoreSavedBattle,
   sendAid,
   setAlly,
   setSimHooks,
   updateWorld,
   type EndReward,
+  type SavedBattle,
 } from './simulation.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T | null =>
@@ -835,7 +843,7 @@ function showAuth(mode: 'in' | 'up' = 'up'): void {
 
   scr(
     '',
-    `<div class="auth"><div class="logo"><h1>ПИКСЕЛЬНЫЙ<br>ФРОНТ</h1><p>Войдите, чтобы сохранять прогресс и рейтинг</p></div>
+    `<div class="auth"><div class="logo"><h1>WorldWar</h1><p>Войдите, чтобы сохранять прогресс</p></div>
     <div class="tabs"><button id="aIn" class="${up ? '' : 'on'}">Вход</button><button id="aUp" class="${up ? 'on' : ''}">Регистрация</button></div>
     <div class="blk"><label class="fld"><span>Имя игрока</span><input id="aName" maxlength="16" autocomplete="username" autocapitalize="off" spellcheck="false"></label>
     <label class="fld"><span>Пароль</span><input id="aPass" type="password" autocomplete="${up ? 'new-password' : 'current-password'}"></label>
@@ -905,12 +913,20 @@ function showHome(): void {
     .map((p) => `<i style="background:${p.h}"></i>`)
     .join('');
 
+  const saved = getBattleSave<SavedBattle>();
+  const contHtml = saved
+    ? `<div class="contwrap"><button class="cont" id="mCont">${IC.play}<div><b>Продолжить бой</b><span>${esc(
+        savedBattleSummary(saved),
+      )}</span></div></button><button class="contdel" id="mDelSave" aria-label="Удалить сохранение">✕</button></div>`
+    : '';
+
   scr(
     '',
     `<div class="home">
       <div class="me"><div class="av" style="background:${col}">${esc(ACC.name.charAt(0).toUpperCase())}</div><div class="nm"><b>${esc(ACC.name)}</b><span>Рейтинг ${PF.rating} · побед ${statGet('wins')}</span></div><div class="coin"><b>${PF.coins}</b><i></i></div></div>
-      <div class="logo"><h1>ПИКСЕЛЬНЫЙ<br>ФРОНТ</h1><div class="flagbar">${flags}</div><p>Стратегия о войне, обороне и захвате</p></div>
+      <div class="logo"><h1>WorldWar</h1><div class="flagbar">${flags}</div><p>Стратегия о войне, обороне и захвате</p></div>
       <button class="play" id="mPlay">${IC.play}<div><b>Играть</b><span>Королевская битва: до 64 стран</span></div></button>
+      ${contHtml}
       <div class="tiles">
         <button class="tile" id="mCamp">${IC.camp}<b>Кампания</b><span>14 уровней и звёзды</span></button>
         <button class="tile blue" id="mTop">${IC.net}<b>Лидерборд</b><span>Рейтинг лучших игроков</span></button>
@@ -926,6 +942,14 @@ function showHome(): void {
   );
 
   $('mPlay')!.onclick = showSetup;
+  if (saved) {
+    $('mCont')!.onclick = () => resumeBattle(saved);
+    $('mDelSave')!.onclick = () => {
+      clearBattleSave(true);
+      toast('Сохранение боя удалено');
+      showHome();
+    };
+  }
   $('mCamp')!.onclick = showCampaign;
   $('mTop')!.onclick = showLeaderboard;
   $('mShop')!.onclick = () => showShop('up');
@@ -937,6 +961,64 @@ function showHome(): void {
     showAuth('in');
   };
   $('mTut')!.onclick = startTutorial;
+}
+
+function saveCurrentBattle(syncNow = false, keepalive = false): boolean {
+  if (!ACC) return false;
+  const tut =
+    G.MISSION && G.MISSION.type === 'tut'
+      ? { i: TUT.i, shown: TUT.shown, a0: TUTF.a0, tapped: TUTF.tapped }
+      : undefined;
+  const snap = exportSavedBattle(tut);
+  if (!snap) return false;
+  setBattleSave(snap, syncNow, keepalive);
+  return true;
+}
+
+function savedBattleSummary(s: SavedBattle): string {
+  const sec = Math.max(0, Math.floor(s.gameT || 0));
+  const tm = `${Math.floor(sec / 60)} мин ${sec % 60} с`;
+  if (s.MISSION?.type === 'tut') return `Обучение · ${tm}`;
+  if (s.MISSION) return `Кампания, уровень ${s.MISSION.id} · ${tm}`;
+  const cnt = SIZES[s.curSize || 0]?.c || 8;
+  return `Королевская битва (${cnt} стран) · ${tm}`;
+}
+
+function resumeBattle(snap: SavedBattle): void {
+  loading('Загружаем сохранённый бой…', () => {
+    const res = restoreSavedBattle(snap);
+    if (!res) {
+      toast('Не удалось загрузить сохранение');
+      clearBattleSave(true);
+      showHome();
+      return;
+    }
+    if (res.tut) {
+      TUT = { i: res.tut.i, shown: res.tut.shown };
+      TUTF.a0 = res.tut.a0;
+      TUTF.tapped = res.tut.tapped;
+    } else {
+      TUT = { i: 0, shown: -1 };
+      TUTF.a0 = 0;
+      TUTF.tapped = false;
+    }
+    $('dipBox')!.hidden = true;
+    $('bDip')!.classList.remove('on');
+    $('rank')!.hidden = true;
+    $('bRank')!.classList.remove('on');
+    $('goal')!.className = '';
+    $('scr')!.hidden = true;
+    $('ov')!.hidden = true;
+    const isCap = G.phase === 'cap';
+    $('count')!.hidden = !isCap;
+    $('wrap')!.classList.toggle('cap', isCap);
+    const bSpd = $('bSpd');
+    if (bSpd) bSpd.textContent = `×${G.speed}`;
+    buildToolbar();
+    setTool('hand');
+    hud();
+    toast('Бой загружен');
+  });
 }
 
 function startTutorial(): void {
@@ -1048,8 +1130,8 @@ function showSetup(): void {
         '8 стран, обычная карта. Быстрая партия.',
         '12 стран, большая карта. Награда ×1,5.',
         '16 стран, огромный континент. Награда ×2.',
-        '32 страны, мега-карта. Награда ×3. Долгая партия.',
-        '64 страны, гигантский мир. Награда ×4.',
+        '32 страны, мега-карта. Награда ×3. Нужен мощный телефон, партия долгая.',
+        '64 страны, гигантский мир. Награда ×4. Только для мощных телефонов, генерация занимает несколько секунд.',
       ][SU.size];
     }
   };
@@ -1273,7 +1355,7 @@ function showShop(tab: 'up' | 'tc' | 'sk'): void {
       }).join('');
   } else if (tab === 'tc') {
     body =
-      '<p class="sm">Технологии изучаются один раз и действуют во всех боях и в кампании.</p>';
+      '<p class="sm">Технологии изучаются один раз и действуют во всех боях и в кампании. Каждая следующая в ветке открывается после предыдущей.</p>';
     for (const br of TBRANCH) {
       body +=
         `<h3 class="br">${br}</h3>` +
@@ -1416,6 +1498,7 @@ function showSettings(back: () => void): void {
       row('Звук', 'sd', ['Выкл', 'Вкл'], S.snd) +
       '<div class="st"><span>Обучение</span><button class="sec" id="tutB">Пройти обучение</button></div>' +
       `<div class="st"><span>Аккаунт: ${esc(ACC?.name || 'Игрок')}</span><button class="sec" id="lgo">Выйти из аккаунта</button></div>` +
+      '<div class="st"><span>Сохранение</span><button class="sec" id="saveNow">Сохранить прогресс</button></div>' +
       '<div class="st"><span>Прогресс</span><button class="sec" id="rst">Сбросить всё</button></div><p class="sm" id="rstT"></p>',
     back,
     'set',
@@ -1425,6 +1508,18 @@ function showSettings(back: () => void): void {
     showAuth('in');
   };
   $('tutB')!.onclick = startTutorial;
+  $('saveNow')!.onclick = () => {
+    const btn = $<HTMLButtonElement>('saveNow')!;
+    btn.disabled = true;
+    btn.textContent = 'Сохраняем…';
+    void flushPF().then((ok) => {
+      if (btn.isConnected) {
+        btn.disabled = false;
+        btn.textContent = ok ? 'Сохранено!' : 'Сохранить прогресс';
+      }
+      toast(ok ? 'Прогресс сохранён' : 'Сохранено локально на устройстве');
+    });
+  };
   wireSeg('sq', (i) => {
     S.q = i;
     G.TSp = [3, 5, 8][i];
@@ -1510,17 +1605,35 @@ function pauseMenu(): void {
   G.paused = true;
   card(
     'Пауза',
-    '<p>Игра на паузе.</p>',
+    '<p>Игра на паузе.</p><div class="pacts"><button class="sec" id="pSave">Сохранить бой</button><button class="sec warn" id="pQuit">Выйти без сохранения</button></div>',
     'Продолжить',
     () => {
       $('ov')!.hidden = true;
       G.paused = false;
     },
-    'Выйти в меню',
+    'Сохранить и выйти',
     () => {
+      saveCurrentBattle(true);
+      toast('Бой сохранён');
+      $('ov')!.hidden = true;
+      leaveToMenu();
+    },
+  );
+  const pSave = $<HTMLButtonElement>('pSave');
+  if (pSave) {
+    pSave.onclick = () => {
+      if (saveCurrentBattle(true)) {
+        pSave.textContent = 'Бой сохранён!';
+        toast('Бой сохранён');
+      }
+    };
+  }
+  const pQuit = $('pQuit');
+  if (pQuit) {
+    pQuit.onclick = () => {
       card(
         'Выйти в меню?',
-        '<p>Текущий бой будет потерян.</p>',
+        '<p>Несохранённый прогресс текущего боя будет потерян.</p>',
         'Выйти',
         () => {
           $('ov')!.hidden = true;
@@ -1529,8 +1642,8 @@ function pauseMenu(): void {
         'Назад',
         pauseMenu,
       );
-    },
-  );
+    };
+  }
 }
 
 function showEnd(win: boolean, r: EndReward): void {
@@ -1655,6 +1768,7 @@ export function bootGame(): () => void {
     dipRefresh,
     onEndCapture: onEndCaptureUI,
     onShowEnd: showEnd,
+    onClearBattleSave: () => clearBattleSave(false),
   });
 
   // Wire HUD buttons
@@ -1779,8 +1893,7 @@ export function bootGame(): () => void {
       G.hover = null;
       return;
     }
-    const i = t.y * G.W + t.x;
-    const ok = G.OWN[i] === G.ME && G.T[i] >= 2 && G.T[i] <= 4 && G.BLD[i] < 0 && (G.P[G.ME]?.money || 0) >= BT[G.brush].c;
+    const ok = canPlace(G.ME, G.brush, t.x, t.y) === '';
     G.hover = { x: t.x, y: t.y, ok };
   };
   const tap = (p: { x: number; y: number }) => {
@@ -1925,9 +2038,22 @@ export function bootGame(): () => void {
   });
 
   const onVis = () => {
-    if (document.hidden && G.phase === 'play' && !G.paused && $('ov')!.hidden) pauseMenu();
+    if (document.hidden) {
+      if (G.phase === 'play' || G.phase === 'cap') {
+        saveCurrentBattle(true, true);
+        if (G.phase === 'play' && !G.paused && $('ov')!.hidden) pauseMenu();
+      } else {
+        savePF(true);
+      }
+    }
   };
   document.addEventListener('visibilitychange', onVis);
+
+  const onPageHide = () => {
+    if (G.phase === 'play' || G.phase === 'cap') saveCurrentBattle(true, true);
+    else savePF(true);
+  };
+  window.addEventListener('pagehide', onPageHide);
 
   const onResize = () => {
     resizeCanvas();
@@ -2024,12 +2150,17 @@ export function bootGame(): () => void {
   });
   hud();
   const hudTimer = setInterval(hud, 250);
+  const autoSaveTimer = setInterval(() => {
+    if (G.phase === 'play' && !G.paused) saveCurrentBattle(false);
+  }, 15000);
   rafId = requestAnimationFrame(frame);
 
   return () => {
     cancelAnimationFrame(rafId);
     clearInterval(hudTimer);
+    clearInterval(autoSaveTimer);
     document.removeEventListener('visibilitychange', onVis);
+    window.removeEventListener('pagehide', onPageHide);
     window.removeEventListener('resize', onResize);
   };
 }

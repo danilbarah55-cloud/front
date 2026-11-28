@@ -1629,6 +1629,84 @@ em.rw {
   opacity: 0.8;
 }
 
+.contwrap {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  margin: -4px 0 14px;
+}
+
+.cont {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 8px 14px;
+  text-align: left;
+  background: linear-gradient(#254272, #182b4d);
+  color: var(--fg);
+  border: 2px solid #539bf5;
+  box-shadow: 0 4px 0 #091326;
+  cursor: pointer;
+}
+
+.cont:active {
+  transform: translateY(2px);
+  box-shadow: 0 2px 0 #091326;
+}
+
+.cont svg {
+  width: 26px;
+  height: 26px;
+  color: #7cc4ff;
+  flex: none;
+}
+
+.cont b {
+  display: block;
+  font-size: 17px;
+  color: #fff;
+}
+
+.cont span {
+  display: block;
+  font-size: 12px;
+  color: #a8c5f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.contdel {
+  flex: 0 0 48px;
+  min-height: 60px;
+  background: var(--panel2);
+  color: #ffb3b3;
+  border: 2px solid #753434;
+  box-shadow: 0 4px 0 #091326;
+  font: 700 18px var(--f1);
+  cursor: pointer;
+}
+
+.contdel:active {
+  transform: translateY(2px);
+  box-shadow: 0 2px 0 #091326;
+}
+
+.pacts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.sec.warn {
+  border-color: #8f3b3b;
+  color: #ffb3b3;
+}
+
 .tiles {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -20,6 +20,7 @@ export interface ProfileData {
     night: number; grid: number; snd: number; shake: number; fps: number;
     diff: number; auto: number; size: number;
   };
+  savedBattle?: any;
   _ts?: number;
 }
 
@@ -41,6 +42,7 @@ export const DEFPF: ProfileData = {
     q: 1, part: 1, shadow: 1, water: 1, clouds: 1, night: 0,
     grid: 0, snd: 1, shake: 1, fps: 0, diff: 1, auto: 1, size: 0,
   },
+  savedBattle: null,
 };
 
 export function mergeDef<T extends Record<string, any>>(d: T, o: any): T {
@@ -111,6 +113,7 @@ const LS_ACCS = 'pixelfront.v7.accs';
 const LS_PRE = 'pixelfront.v7.p.';
 const LS_ACC = 'pixelfront.v7.acc';
 const LS_TOK = 'pixelfront.v7.tok';
+const LS_BAT = 'pixelfront.v7.bat.';
 
 function storeSessionToken(token: string, remember: boolean): void {
   try {
@@ -376,7 +379,7 @@ function lsDel(key: string): void {
   }
 }
 
-export function savePF() {
+export function savePF(keepalive = false) {
   if (!ACC) return;
   PF._ts = Date.now();
   lsSet(LS_PRE + ACC.slug, PF);
@@ -385,6 +388,7 @@ export function savePF() {
     void apiFetch('/api/profile', {
       method: 'PUT',
       body: JSON.stringify({ profile: PF }),
+      keepalive,
     }).catch(() => {});
     return;
   }
@@ -407,9 +411,90 @@ export function savePF() {
   }
 }
 
+export async function flushPF(): Promise<boolean> {
+  if (pfTimer) {
+    clearTimeout(pfTimer);
+    pfTimer = null;
+  }
+  if (!ACC) return false;
+  PF._ts = Date.now();
+  lsSet(LS_PRE + ACC.slug, PF);
+
+  if (storageMode === 'server' && authToken) {
+    try {
+      const res = await apiFetch('/api/profile', {
+        method: 'PUT',
+        body: JSON.stringify({ profile: PF }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  if (storageMode === 'supabase-direct' && directSupabase && !supabaseMissingTable) {
+    try {
+      const coins = Math.max(0, Math.floor(PF.coins || 0));
+      const rating = Math.max(0, Math.floor(PF.rating || 0));
+      const wins = Math.max(0, Math.floor(PF.stats?.wins || 0));
+      const { error } = await directSupabase
+        .from('players')
+        .update({
+          coins,
+          rating,
+          wins,
+          profile: PF,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('slug', ACC.slug);
+      return !error;
+    } catch {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+export function getBattleSave<T = any>(): T | null {
+  if (!ACC) return null;
+  const local = lsGet<any>(LS_BAT + ACC.slug, null);
+  const cloud = PF.savedBattle && typeof PF.savedBattle === 'object' ? PF.savedBattle : null;
+  if (local && cloud) {
+    return (Number(cloud.savedAt) || 0) > (Number(local.savedAt) || 0) ? (cloud as T) : (local as T);
+  }
+  return (local || cloud || null) as T | null;
+}
+
+export function setBattleSave(snap: any, syncNow = false, keepalive = false): void {
+  if (!ACC || !snap) return;
+  lsSet(LS_BAT + ACC.slug, snap);
+  try {
+    if (JSON.stringify(snap).length <= 180000) {
+      PF.savedBattle = snap;
+    } else {
+      PF.savedBattle = null;
+    }
+  } catch {
+    // ignore size check
+  }
+  if (syncNow) savePF(keepalive);
+  else savePFSoon();
+}
+
+export function clearBattleSave(syncNow = true): void {
+  if (!ACC) return;
+  lsDel(LS_BAT + ACC.slug);
+  if (PF.savedBattle) {
+    PF.savedBattle = null;
+    if (syncNow) savePF();
+    else savePFSoon();
+  }
+}
+
 export function savePFSoon() {
   if (pfTimer) clearTimeout(pfTimer);
-  pfTimer = setTimeout(savePF, 500);
+  pfTimer = setTimeout(() => savePF(false), 500);
 }
 
 export function dayKey(): string {
