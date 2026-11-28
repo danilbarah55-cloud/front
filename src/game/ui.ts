@@ -8,6 +8,9 @@ import {
   DR,
   LEVELS,
   MCOST,
+  NCOST,
+  NR,
+  NRD,
   PAL,
   SIZES,
   SKINS,
@@ -35,6 +38,7 @@ import {
   statGet,
   storageMode,
   supabaseEnabled,
+  supabaseMissingTable,
   taskDone,
   techBuy,
   todayTasks,
@@ -409,6 +413,19 @@ function aimCheck(): void {
         e = 'Не хватает денег';
       }
     }
+  } else if (G.tool === 'nuke') {
+    lbl = 'Ядерный удар';
+    btn = 'ПУСК';
+    if (!p.cnt.silo) e = 'Нужна ракетная шахта';
+    else {
+      s = nearestB(G.ME, 'silo', tx, ty, NR);
+      if (!s) {
+        e = `Дальше ${NR} км от шахт`;
+        s = nearestB(G.ME, 'silo', tx, ty);
+      } else if (p.money < NCOST) {
+        e = `Нужно ${NCOST} монет`;
+      }
+    }
   } else if (G.tool === 'drone') {
     lbl = 'Дроны';
     if (!p.cnt.dfac) e = 'Нужен завод дронов';
@@ -421,23 +438,25 @@ function aimCheck(): void {
         e = 'Не хватает денег';
       }
     }
-  } else if (G.tool === 'tank' || G.tool === 'rpg') {
-    const st = G.tool === 'tank' ? 'factory' : 'barracks';
+  } else if (G.tool === 'tank' || G.tool === 'rpg' || G.tool === 'howitzer') {
+    const st = G.tool === 'rpg' ? 'barracks' : 'factory';
     lbl = UN[G.tool].n;
     btn = 'В бой';
     if (!p.cnt[st]) {
-      e = G.tool === 'tank' ? 'Нужен завод техники' : 'Нужна казарма';
+      e = G.tool === 'rpg' ? 'Нужна казарма' : 'Нужен завод техники';
     } else {
       s = nearestB(G.ME, st, tx, ty);
       if (!s) {
-        e = G.tool === 'tank' ? 'Нужен завод техники' : 'Нужна казарма';
+        e = G.tool === 'rpg' ? 'Нужна казарма' : 'Нужен завод техники';
       } else if (x < 0 || y < 0 || x >= G.W || y >= G.H || G.T[y * G.W + x] < 2) {
         e = 'Цель в воде';
       } else {
         const f = mkField(x, y, s.x, s.y);
         if (!f || f[s.y * G.W + s.x] < 0) e = 'Цель на другом острове';
         else if (p.money < ucost(G.ME, G.tool)) e = 'Не хватает денег';
-        else if (G.tool === 'rpg' && p.sol < UN.rpg.sol) e = `Мало солдат: нужно ${UN.rpg.sol}`;
+        else if ((G.tool === 'rpg' || G.tool === 'howitzer') && p.sol < UN[G.tool].sol) {
+          e = `Мало солдат: нужно ${UN[G.tool].sol}`;
+        }
       }
     }
   } else if (G.tool === 'plane') {
@@ -471,7 +490,13 @@ function aimCheck(): void {
   G.aim.fx = s ? s.x + 0.5 : scMe.x + 0.5;
   G.aim.fy = s ? s.y + 0.5 : scMe.y + 0.5;
   const d = Math.round(Math.hypot(tx - G.aim.fx, ty - G.aim.fy));
-  showInfo(`${lbl}: ${e ? e : `${d} км до цели`}`, e ? '' : btn, 'aim');
+  let warn = '';
+  if (!e && G.tool === 'nuke') {
+    let mine = 0;
+    for (const b of G.B) if (!b.dead && b.o === G.ME && Math.hypot(b.x + 0.5 - tx, b.y + 0.5 - ty) <= NRD) mine++;
+    if (mine) warn = ` · в зоне ВАШИ здания: ${mine}`;
+  }
+  showInfo(`${lbl}: ${e ? e : `${d} км до цели${warn}`}`, e ? '' : btn, 'aim');
 }
 
 function missionProg(): string {
@@ -537,9 +562,11 @@ export function hud(): void {
             ? p.money < MCOST
             : t.id === 'drone'
               ? p.money < DCOST
-              : t.id === 'plane'
-                ? p.money < planeCost(G.ME)
-                : p.money < ucost(G.ME, t.id as 'tank' | 'rpg');
+              : t.id === 'nuke'
+                ? p.money < NCOST
+                : t.id === 'plane'
+                  ? p.money < planeCost(G.ME)
+                  : p.money < ucost(G.ME, t.id as 'tank' | 'rpg' | 'howitzer');
     btns[t.id].classList.toggle('poor', poor);
   }
 
@@ -547,7 +574,12 @@ export function hud(): void {
   if (al) {
     if (G.phase === 'play' && G.alarmT > 0) {
       al.hidden = false;
-      al.textContent = G.alarmK === 'm' ? 'ТРЕВОГА: ракета летит на вашу землю' : 'ТРЕВОГА: дроны атакуют вашу землю';
+      al.textContent =
+        G.alarmK === 'n'
+          ? 'ТРЕВОГА: ЯДЕРНАЯ РАКЕТА! Стройте ПВО'
+          : G.alarmK === 'm'
+            ? 'ТРЕВОГА: ракета летит на вашу землю'
+            : 'ТРЕВОГА: дроны атакуют вашу землю';
     } else {
       al.hidden = true;
     }
@@ -783,10 +815,13 @@ function authDbStatusText(): string {
   if (supabaseEnabled) {
     return 'Облачное сохранение через Supabase подключено.';
   }
-  if (storageMode === 'local') {
-    return 'Локальное сохранение в браузере активно (автономный режим).';
+  if (supabaseMissingTable) {
+    return 'Ключи Supabase найдены, но таблица players не создана (выполните supabase_schema.sql в Supabase SQL Editor). Пока работает локальное сохранение.';
   }
-  return 'Сохранение прогресса на сервере активно (для облака Supabase нужны только SUPABASE_URL и SUPABASE_ANON_KEY).';
+  if (storageMode === 'local') {
+    return 'Локальное сохранение в браузере активно (аккаунт сохраняется на этом устройстве).';
+  }
+  return 'Сохранение прогресса на сервере активно (для облака Supabase нужны SUPABASE_URL и SUPABASE_ANON_KEY).';
 }
 
 function showAuth(mode: 'in' | 'up' = 'up'): void {
@@ -1635,7 +1670,9 @@ export function bootGame(): () => void {
       else if (G.tool === 'assault') m = doAct('assault', { x, y });
       else if (G.tool === 'tank') m = doAct('tank', { x, y });
       else if (G.tool === 'rpg') m = doAct('rpg', { x, y });
+      else if (G.tool === 'howitzer') m = doAct('howitzer', { x, y });
       else if (G.tool === 'plane') m = doAct('plane', { tx, ty });
+      else if (G.tool === 'nuke') m = doAct('nuke', { tx, ty });
       if (!m) closeInfo();
     }
     if (m) toast(m);
@@ -1770,7 +1807,7 @@ export function bootGame(): () => void {
     G.aim.on = true;
     G.aim.tx = t.wx;
     G.aim.ty = t.wy;
-    if (G.tool === 'assault' || G.tool === 'tank' || G.tool === 'rpg') {
+    if (G.tool === 'assault' || G.tool === 'tank' || G.tool === 'rpg' || G.tool === 'howitzer') {
       G.aim.tx = x + 0.5;
       G.aim.ty = y + 0.5;
     }
@@ -1896,6 +1933,9 @@ export function bootGame(): () => void {
   let lastT = 0;
   let menuT = 0;
   let upMs = 1;
+  let lastF = 0;
+  let fAvg = 16;
+  let fN = 0;
   let rafId = 0;
 
   const frame = (t: number) => {
@@ -1933,6 +1973,22 @@ export function bootGame(): () => void {
       if (cB) cB.style.width = `${(Math.max(0, G.capT) / 5) * 100}%`;
     }
     renderWorld(t);
+    if (G.phase === 'play' || G.phase === 'cap') {
+      const fd = t - lastF;
+      lastF = t;
+      if (fd > 0 && fd < 250) {
+        fAvg = fAvg * 0.95 + fd * 0.05;
+        if (++fN > 150 && fAvg > 26 && G.dpr > 1.5) {
+          fN = 0;
+          fAvg = 16;
+          G.dprCap = G.dpr > 2.2 ? 2 : 1.5;
+          resizeCanvas();
+          clampCam();
+        }
+      }
+    } else {
+      fN = 0;
+    }
     rafId = requestAnimationFrame(frame);
   };
 

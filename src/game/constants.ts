@@ -32,6 +32,9 @@ export const ACH = [
   { id: 'roy', n: 'Король континента', d: 'Победите на огромной карте', st: 'winsHuge', goal: 1, r: 350 },
   { id: 'tut', n: 'Новобранец', d: 'Пройдите обучение', st: 'tutorial', goal: 1, r: 50 },
   { id: 'rich', n: 'Казначей', d: 'Заработайте в сумме 1000 монет', st: 'coinsTotal', goal: 1000, r: 150 },
+  { id: 'hw5', n: 'Бог войны', d: 'Выпустите 5 гаубиц', st: 'howitzers', goal: 5, r: 120 },
+  { id: 'nk1', n: 'Ядерный рубеж', d: 'Запустите ядерную ракету', st: 'nukes', goal: 1, r: 500 },
+  { id: 'nks', n: 'Перехват века', d: 'Сбейте ядерную ракету', st: 'nukeStops', goal: 1, r: 300 },
 ];
 
 export const TASKPOOL = [
@@ -49,6 +52,7 @@ export const TASKPOOL = [
   { id: 't12', t: 'Высадите десант', st: 'landings', goal: 1, r: 40 },
   { id: 't13', t: 'Заключите союз', st: 'alliances', goal: 1, r: 40 },
   { id: 't14', t: 'Помогите союзнику 2 раза', st: 'aids', goal: 2, r: 35 },
+  { id: 't15', t: 'Выпустите гаубицу', st: 'howitzers', goal: 1, r: 35 },
 ];
 
 export const UPG = [
@@ -185,11 +189,30 @@ export const AR = 8;
 export const SAMR = 12;
 export const LR = 45;
 export const LCOST = 50;
+export const NCOST = 10000;
+export const NR = 120;
+export const NRK = 9;
+export const NRD = 15;
 
-export const UN: Record<string, { n: string; c: number; hp: number; sp: number; rg: number; dmg: Record<string, number>; cd: number; sol: number }> = {
+export const UN: Record<
+  string,
+  {
+    n: string;
+    c: number;
+    hp: number;
+    sp: number;
+    rg: number;
+    min?: number;
+    dmg: Record<string, number>;
+    cd: number;
+    sol: number;
+    shell?: number;
+  }
+> = {
   tank: { n: 'Танк', c: 90, hp: 420, sp: 1.5, rg: 3.3, dmg: { tank: 20, rpg: 38, b: 30 }, cd: 0.85, sol: 0 },
   rpg: { n: 'РПГ', c: 30, hp: 50, sp: 1.1, rg: 3.9, dmg: { tank: 68, rpg: 22, b: 8 }, cd: 1.7, sol: 6 },
   plane: { n: 'Самолёт', c: 110, hp: 75, sp: 6.2, rg: 0, dmg: {}, cd: 0, sol: 0 },
+  howitzer: { n: 'Гаубица', c: 160, hp: 170, sp: 0.8, rg: 15, min: 4.5, dmg: {}, cd: 3.4, sol: 4, shell: 70 },
 };
 
 export const DIFF = [
@@ -235,7 +258,7 @@ export const LEVELS = [
   },
   {
     id: 5, n: 'Через пролив', seed: 1516, slot: 4, enemies: [5], diff: 1, type: 'elim', goal: 0,
-    startMoney: 800, calm: 90, aggr: 0.8, aiMode: '', allow: BASEALLOW.concat(['sam', 'silo', 'missile', 'dfac', 'drone', 'factory', 'tank', 'rpg', 'airfield', 'plane']), par: 480,
+    startMoney: 800, calm: 90, aggr: 0.8, aiMode: '', allow: BASEALLOW.concat(['sam', 'silo', 'missile', 'dfac', 'drone', 'factory', 'tank', 'rpg', 'airfield', 'plane', 'howitzer']), par: 480,
     story: 'Противник отгородился морем. Танки туда не пройдут, но у нас есть авиация, ракеты и морской десант. Подавите ПВО и возьмите столицу врага.',
     goal_t: 'Захватите вражескую столицу за проливом',
   },
@@ -260,7 +283,7 @@ export const LEVELS = [
   {
     id: 9, n: 'Первый союз', seed: 1900, slot: 1, enemies: [2, 3, 4, 5], diff: 1, type: 'ally', goal: 2,
     startMoney: 700, calm: 90, aggr: 0.8, aiMode: '', allow: null, par: 300,
-    story: 'Один против четверых воевать не стоит. Откройте дипломатию и заключите союзы с двумя странами. Союзники не нападут на вас и помогут против общих врагов.',
+    story: 'Один против четверых воевать не стоит. Откройте дипломатию и заключите союзы с двумя странами. Союзники не нападут на вас и помогут против общих врагов. Помогайте им деньгами, солдатами, танками и ПВО.',
     goal_t: 'Заключите союзы с двумя странами',
   },
   {
@@ -316,10 +339,34 @@ export const TOOLS = [
   { id: 'airfield', n: 'Аэродром', c: 220, h: 'Аэродром выпускает самолёты. Дальность 70 км.' },
   'sep' as const,
   { id: 'missile', n: 'Ракета', c: 120, h: 'Тапни по цели, затем «Огонь». Дальность ' + MR + ' км от шахты.' },
+  {
+    id: 'nuke',
+    n: 'Ядерка',
+    c: '10 000',
+    h:
+      'Ядерная ракета: ' +
+      NCOST +
+      ' монет. Дальность ' +
+      NR +
+      ' км от шахты. Всё в радиусе ' +
+      NRK +
+      ' км сгорает вместе со столицей, земля становится ничейной. ПВО нужно много попаданий, мир осудит запуск.',
+  },
   { id: 'drone', n: 'Рой дронов', c: 45, h: 'Тапни по цели, затем «Огонь». Дальность ' + DR + ' км от завода.' },
   { id: 'assault', n: 'Захват', c: '15 / 50 сол.', h: 'Захват до ' + AR + ' км от своей земли за 15 солдат, десант через воду до ' + LR + ' км за ' + LCOST + '. Враг отбивает штурм, если его оборона сильнее.' },
   'sep' as const,
   { id: 'tank', n: 'Танк', c: 90, h: 'Тапни цель на суше и жми «В бой». Танк идёт сам, бьёт технику и здания. Много здоровья.' },
   { id: 'rpg', n: 'РПГ', c: '30 +6 сол.', h: 'Расчёт РПГ из казармы. Дёшево подбивает танки, но слаб против пехоты и зданий.' },
+  {
+    id: 'howitzer',
+    n: 'Гаубица',
+    c: '160 +4 сол.',
+    h:
+      'Артиллерия с заводом. Бьёт навесом на ' +
+      UN.howitzer.rg +
+      ' км, не достаёт ближе ' +
+      UN.howitzer.min +
+      ' км. Хрупкая, нужна защита. Тапни цель и жми «В бой».',
+  },
   { id: 'plane', n: 'Самолёт', c: 110, h: 'Бомбардировщик из аэродрома. Летит над водой, бьёт по цели. Его сбивает ПВО.' },
 ];

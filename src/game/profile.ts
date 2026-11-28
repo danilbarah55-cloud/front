@@ -97,6 +97,7 @@ export let PF: ProfileData = mergeDef(DEFPF, {});
 export let ACC: { slug: string; name: string } | null = null;
 export let authToken = '';
 export let supabaseEnabled = Boolean(directSupabase);
+export let supabaseMissingTable = false;
 export let backendAvailable: boolean | null = null;
 export let storageMode: StorageMode = 'server';
 
@@ -108,6 +109,39 @@ let probePromise: Promise<boolean> | null = null;
 const LS_ACCS = 'pixelfront.v7.accs';
 const LS_PRE = 'pixelfront.v7.p.';
 const LS_ACC = 'pixelfront.v7.acc';
+const LS_TOK = 'pixelfront.v7.tok';
+
+function storeSessionToken(token: string, remember: boolean): void {
+  try {
+    if (token && remember) {
+      localStorage.setItem(LS_TOK, token);
+      sessionStorage.removeItem(LS_TOK);
+    } else if (token) {
+      sessionStorage.setItem(LS_TOK, token);
+      localStorage.removeItem(LS_TOK);
+    } else {
+      localStorage.removeItem(LS_TOK);
+      sessionStorage.removeItem(LS_TOK);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function readSessionToken(): string {
+  try {
+    return sessionStorage.getItem(LS_TOK) || localStorage.getItem(LS_TOK) || '';
+  } catch {
+    return '';
+  }
+}
+
+function isMissingTableErr(err: { code?: string; message?: string } | null | undefined): boolean {
+  if (!err) return false;
+  if (err.code === 'PGRST205' || err.code === '42P01') return true;
+  const msg = String(err.message || '');
+  return msg.includes('schema cache') || msg.includes('does not exist');
+}
 
 export function setPfNotify(fn: (m: string) => void) {
   notifyFn = fn;
@@ -139,6 +173,38 @@ async function sha256Hex(text: string): Promise<string> {
     h = Math.imul(h, 16777619) >>> 0;
   }
   return h.toString(16).padStart(8, '0');
+}
+
+async function pbkdf2Hash(password: string, salt: string, iterations = 100000): Promise<string> {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', salt: enc.encode(salt), iterations, hash: 'SHA-256' },
+      key,
+      256,
+    );
+    const hex = Array.from(new Uint8Array(bits))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    return `pbkdf2$${iterations}$${hex}`;
+  }
+  return sha256Hex(`${salt}:${password}`);
+}
+
+async function verifyClientHash(password: string, salt: string, expected: string): Promise<boolean> {
+  if (!expected) return false;
+  if (expected.startsWith('pbkdf2$')) {
+    const parts = expected.split('$');
+    const iter = Number(parts[1]) || 100000;
+    const actual = await pbkdf2Hash(password, salt, iter);
+    return actual === expected;
+  }
+  if (/^[0-9a-f]{64}$/i.test(expected)) {
+    const legacy = await sha256Hex(`${salt}:${password}`);
+    return legacy === expected;
+  }
+  return false;
 }
 
 function randomSalt(): string {
@@ -183,6 +249,7 @@ export async function probeBackend(): Promise<boolean> {
       const ct = res.headers.get('content-type') || '';
       if (res.ok && ct.includes('application/json')) {
         const d = await res.json();
+        supabaseMissingTable = Boolean(d?.missingTable);
         if (d && d.ok) {
           backendAvailable = true;
           storageMode = 'server';
@@ -197,8 +264,8 @@ export async function probeBackend(): Promise<boolean> {
     }
 
     backendAvailable = false;
-    storageMode = directSupabase ? 'supabase-direct' : 'local';
-    supabaseEnabled = Boolean(directSupabase);
+    storageMode = directSupabase && !supabaseMissingTable ? 'supabase-direct' : 'local';
+    supabaseEnabled = Boolean(directSupabase && !supabaseMissingTable);
     return false;
   })();
 
@@ -250,6 +317,7 @@ function lsDel(key: string): void {
 export function savePF() {
   if (!ACC) return;
   PF._ts = Date.now();
+  lsSet(LS_PRE + ACC.slug, PF);
 
   if (storageMode === 'server' && authToken) {
     void apiFetch('/api/profile', {
@@ -259,8 +327,7 @@ export function savePF() {
     return;
   }
 
-  lsSet(LS_PRE + ACC.slug, PF);
-  if (storageMode === 'supabase-direct' && directSupabase) {
+  if (storageMode === 'supabase-direct' && directSupabase && !supabaseMissingTable) {
     const coins = Math.max(0, Math.floor(PF.coins || 0));
     const rating = Math.max(0, Math.floor(PF.rating || 0));
     const wins = Math.max(0, Math.floor(PF.stats?.wins || 0));
@@ -455,9 +522,19 @@ export async function accRegister(name: string, password: string, remember: bool
       const data = await res.json();
       if (!res.ok) return data.error || 'Ошибка регистрации';
       authToken = data.token || '';
+      storeSessionToken(authToken, remember);
       ACC = data.user;
       syncLoadedProfile(data.profile);
+      if (ACC) {
+        lsSet(LS_PRE + ACC.slug, PF);
+        if (remember) lsSet(LS_ACC, ACC);
+        else lsDel(LS_ACC);
+      }
       supabaseEnabled = Boolean(data.supabase);
+      supabaseMissingTable = Boolean(data.missingTable);
+      if (supabaseMissingTable) {
+        notifyFn('Аккаунт сохранён только на этом устройстве: создайте таблицу players в Supabase.');
+      }
       onAuthChangeFn();
       return '';
     } catch {
@@ -466,36 +543,50 @@ export async function accRegister(name: string, password: string, remember: bool
   }
 
   const salt = randomSalt();
-  const hash = await sha256Hex(`${salt}:${password}`);
+  const hash = await pbkdf2Hash(password, salt);
   const initProf = mergeDef(DEFPF, {});
 
-  if (directSupabase) {
+  if (directSupabase && !supabaseMissingTable) {
     try {
-      const { data: existing } = await directSupabase
+      const { data: existing, error: selErr } = await directSupabase
         .from('players')
         .select('slug')
         .eq('slug', slug)
         .maybeSingle();
-      if (existing) return 'Такое имя уже занято. Войдите в аккаунт.';
-      const { error } = await directSupabase.from('players').insert({
-        slug,
-        name: cleanName,
-        salt,
-        password_hash: hash,
-        coins: 0,
-        rating: 0,
-        wins: 0,
-        profile: initProf,
-        updated_at: new Date().toISOString(),
-      });
-      if (error) return 'Не удалось создать аккаунт в Supabase';
-      ACC = { slug, name: cleanName };
-      syncLoadedProfile(initProf);
-      lsSet(LS_PRE + slug, PF);
-      if (remember) lsSet(LS_ACC, ACC);
-      else lsDel(LS_ACC);
-      onAuthChangeFn();
-      return '';
+      if (selErr && isMissingTableErr(selErr)) {
+        supabaseMissingTable = true;
+        supabaseEnabled = false;
+        storageMode = 'local';
+      } else {
+        if (existing) return 'Такое имя уже занято. Войдите в аккаунт.';
+        const { error } = await directSupabase.from('players').insert({
+          slug,
+          name: cleanName,
+          salt,
+          password_hash: hash,
+          coins: 0,
+          rating: 0,
+          wins: 0,
+          profile: initProf,
+          updated_at: new Date().toISOString(),
+        });
+        if (!error) {
+          ACC = { slug, name: cleanName };
+          syncLoadedProfile(initProf);
+          lsSet(LS_PRE + slug, PF);
+          if (remember) lsSet(LS_ACC, ACC);
+          else lsDel(LS_ACC);
+          onAuthChangeFn();
+          return '';
+        }
+        if (isMissingTableErr(error)) {
+          supabaseMissingTable = true;
+          supabaseEnabled = false;
+          storageMode = 'local';
+        } else {
+          return 'Не удалось создать аккаунт в Supabase';
+        }
+      }
     } catch {
       return 'Ошибка подключения к Supabase';
     }
@@ -510,6 +601,9 @@ export async function accRegister(name: string, password: string, remember: bool
   lsSet(LS_PRE + slug, PF);
   if (remember) lsSet(LS_ACC, ACC);
   else lsDel(LS_ACC);
+  if (supabaseMissingTable) {
+    notifyFn('Аккаунт сохранён только на этом устройстве: создайте таблицу players в Supabase.');
+  }
   onAuthChangeFn();
   return '';
 }
@@ -529,9 +623,16 @@ export async function accLogin(name: string, password: string, remember: boolean
       const data = await res.json();
       if (!res.ok) return data.error || 'Ошибка входа';
       authToken = data.token || '';
+      storeSessionToken(authToken, remember);
       ACC = data.user;
       syncLoadedProfile(data.profile);
+      if (ACC) {
+        lsSet(LS_PRE + ACC.slug, PF);
+        if (remember) lsSet(LS_ACC, ACC);
+        else lsDel(LS_ACC);
+      }
       supabaseEnabled = Boolean(data.supabase);
+      supabaseMissingTable = Boolean(data.missingTable);
       onAuthChangeFn();
       return '';
     } catch {
@@ -539,23 +640,43 @@ export async function accLogin(name: string, password: string, remember: boolean
     }
   }
 
-  if (directSupabase) {
+  if (directSupabase && !supabaseMissingTable) {
     try {
       const { data, error } = await directSupabase
         .from('players')
         .select('slug, name, salt, password_hash, profile')
         .eq('slug', slug)
         .maybeSingle();
-      if (error || !data) return 'Аккаунт не найден';
-      const checkHash = await sha256Hex(`${data.salt}:${password}`);
-      if (checkHash !== data.password_hash) return 'Неверный пароль';
-      ACC = { slug: String(data.slug), name: String(data.name) };
-      syncLoadedProfile(data.profile);
-      lsSet(LS_PRE + slug, PF);
-      if (remember) lsSet(LS_ACC, ACC);
-      else lsDel(LS_ACC);
-      onAuthChangeFn();
-      return '';
+      if (error && isMissingTableErr(error)) {
+        supabaseMissingTable = true;
+        supabaseEnabled = false;
+        storageMode = 'local';
+      } else {
+        if (error || !data) return 'Аккаунт не найден';
+        const storedHash = String(data.password_hash || '');
+        const ok = await verifyClientHash(password, String(data.salt || ''), storedHash);
+        if (!ok) {
+          if (/^[0-9a-f]{128}$/i.test(storedHash)) {
+            return 'Аккаунт создан старым способом на веб-сервере. Войдите 1 раз через сайт для обновления или зарегистрируйте новый.';
+          }
+          return 'Неверный пароль';
+        }
+        if (!storedHash.startsWith('pbkdf2$')) {
+          const upgraded = await pbkdf2Hash(password, String(data.salt || ''));
+          void directSupabase
+            .from('players')
+            .update({ password_hash: upgraded, updated_at: new Date().toISOString() })
+            .eq('slug', slug)
+            .then(() => {}, () => {});
+        }
+        ACC = { slug: String(data.slug), name: String(data.name) };
+        syncLoadedProfile(data.profile);
+        lsSet(LS_PRE + slug, PF);
+        if (remember) lsSet(LS_ACC, ACC);
+        else lsDel(LS_ACC);
+        onAuthChangeFn();
+        return '';
+      }
     } catch {
       return 'Ошибка подключения к Supabase';
     }
@@ -564,8 +685,12 @@ export async function accLogin(name: string, password: string, remember: boolean
   const accs = lsGet<Record<string, { slug: string; name: string; salt: string; hash: string }>>(LS_ACCS, {});
   const rec = accs[slug];
   if (!rec) return 'Аккаунт не найден';
-  const checkHash = await sha256Hex(`${rec.salt}:${password}`);
-  if (checkHash !== rec.hash) return 'Неверный пароль';
+  const ok = await verifyClientHash(password, rec.salt, rec.hash);
+  if (!ok) return 'Неверный пароль';
+  if (!rec.hash.startsWith('pbkdf2$')) {
+    rec.hash = await pbkdf2Hash(password, rec.salt);
+    lsSet(LS_ACCS, accs);
+  }
   ACC = { slug: rec.slug, name: rec.name };
   syncLoadedProfile(lsGet(LS_PRE + slug, DEFPF));
   if (remember) lsSet(LS_ACC, ACC);
@@ -577,6 +702,7 @@ export async function accLogin(name: string, password: string, remember: boolean
 export async function accLogout(): Promise<void> {
   savePF();
   authToken = '';
+  storeSessionToken('', false);
   ACC = null;
   PF = mergeDef(DEFPF, {});
   lsDel(LS_ACC);
@@ -587,18 +713,29 @@ export async function accLogout(): Promise<void> {
 }
 
 export async function accAuto(): Promise<boolean> {
+  authToken = readSessionToken();
   const hasServer = await probeBackend();
   if (hasServer) {
     try {
       const res = await apiFetch('/api/auth/me', { method: 'GET' });
-      if (!res.ok) return false;
-      const data = await res.json();
-      authToken = data.token || '';
-      ACC = data.user;
-      syncLoadedProfile(data.profile);
-      supabaseEnabled = Boolean(data.supabase);
-      onAuthChangeFn();
-      return true;
+      if (res.ok) {
+        const data = await res.json();
+        authToken = data.token || authToken;
+        if (authToken) {
+          const hadRemember = Boolean(localStorage.getItem(LS_TOK));
+          storeSessionToken(authToken, hadRemember);
+        }
+        ACC = data.user;
+        syncLoadedProfile(data.profile);
+        if (ACC) lsSet(LS_PRE + ACC.slug, PF);
+        supabaseEnabled = Boolean(data.supabase);
+        supabaseMissingTable = Boolean(data.missingTable);
+        onAuthChangeFn();
+        return true;
+      }
+      storeSessionToken('', false);
+      authToken = '';
+      return false;
     } catch {
       return false;
     }
@@ -607,14 +744,18 @@ export async function accAuto(): Promise<boolean> {
   const saved = lsGet<{ slug: string; name: string } | null>(LS_ACC, null);
   if (!saved?.slug) return false;
 
-  if (directSupabase) {
+  if (directSupabase && !supabaseMissingTable) {
     try {
-      const { data } = await directSupabase
+      const { data, error } = await directSupabase
         .from('players')
         .select('slug, name, profile')
         .eq('slug', saved.slug)
         .maybeSingle();
-      if (data) {
+      if (error && isMissingTableErr(error)) {
+        supabaseMissingTable = true;
+        supabaseEnabled = false;
+        storageMode = 'local';
+      } else if (data) {
         ACC = { slug: String(data.slug), name: String(data.name) };
         syncLoadedProfile(data.profile);
         lsSet(LS_PRE + ACC.slug, PF);
@@ -627,7 +768,7 @@ export async function accAuto(): Promise<boolean> {
   }
 
   const accs = lsGet<Record<string, { slug: string; name: string }>>(LS_ACCS, {});
-  if (!accs[saved.slug] && !directSupabase) return false;
+  if (!accs[saved.slug] && (!directSupabase || supabaseMissingTable)) return false;
   ACC = saved;
   syncLoadedProfile(lsGet(LS_PRE + saved.slug, DEFPF));
   onAuthChangeFn();

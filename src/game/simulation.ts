@@ -11,16 +11,22 @@ import {
   LEVELS,
   LR,
   MCOST,
+  NCOST,
+  NR,
+  NRD,
+  NRK,
   UN,
 } from './constants.ts';
 import { addCoins, PF, savePF, track, trackMax } from './profile.ts';
 import {
   allocWorld,
   applyPalette,
+  arcOf,
   bonusUp,
   crater,
   G,
   genTiles,
+  hash,
   inView,
   isAlly,
   isFriend,
@@ -31,6 +37,7 @@ import {
   planeCost,
   rng,
   samR,
+  scorch,
   snd,
   tk,
   ucost,
@@ -170,6 +177,9 @@ export function newGame(cfg: NewGameConfig = {}): void {
   G.PT = [];
   G.BM = [];
   G.U = [];
+  G.WK = [];
+  G.RB = [];
+  G.NK = [];
   G.OWN.fill(0);
   G.BLD.fill(-1);
   G.P = [null];
@@ -387,8 +397,27 @@ function hitUnit(u: Unit, dmg: number, byO?: number, byK?: string): void {
   u.hp -= dmg;
   if (u.hp <= 0) {
     u.dead = true;
-    sparks(u.x, u.y, u.k === 'plane' ? 14 : 10, 3, ['#ffb02e', '#ff6b2e', '#555', '#222'], 0.35);
+    sparks(
+      u.x,
+      u.y,
+      u.k === 'plane' ? 14 : u.k === 'tank' || u.k === 'howitzer' ? 24 : 10,
+      3,
+      ['#ffb02e', '#ff6b2e', '#555', '#222'],
+      0.35,
+    );
     ring(u.x, u.y, 1.2, '#ff8a3d', 0.4);
+    if (u.k === 'tank' || u.k === 'howitzer') {
+      G.WK.push({
+        x: u.x,
+        y: u.y,
+        a: u.a || 0,
+        ta: u.ta === undefined ? u.a || 0 : u.ta,
+        k: u.k,
+        o: u.o,
+        t0: performance.now(),
+      });
+      if (G.WK.length > 40) G.WK.shift();
+    }
     if (inView(u.x, u.y)) snd(u.k === 'plane' ? 200 : 130, 0.3, 'sawtooth', 0.06, 40);
     if (byO === G.ME && u.o !== G.ME) {
       if (u.k === 'tank') {
@@ -439,8 +468,10 @@ function destroyB(b: Building, by?: number): void {
   b.dead = true;
   G.BLD[b.y * G.W + b.x] = -1;
   if (b.o === G.ME && !b.cap) G.RS.lost = (G.RS.lost || 0) + 1;
-  sparks(b.x + 0.5, b.y + 0.5, 16, 4, ['#ffb02e', '#ff6b2e', '#444', '#888'], 0.4);
+  sparks(b.x + 0.5, b.y + 0.5, 22, 4, ['#ffb02e', '#ff6b2e', '#444', '#888'], 0.4);
   ring(b.x + 0.5, b.y + 0.5, 2.2, '#ff8a3d', 0.6);
+  G.RB.push({ x: b.x, y: b.y, t: b.t, cap: b.cap, t0: performance.now() });
+  if (G.RB.length > 60) G.RB.shift();
   if (b.cap) {
     if (by && by !== b.o) annex(b.o, by);
     else eliminate(b.o);
@@ -666,11 +697,95 @@ export function launchMissile(o: number, tx: number, ty: number): string {
     hp: 2,
   });
   ring(s.x + 0.5, s.y + 0.5, 2, '#fff', 0.4);
+  s.lt = performance.now();
+  s.nk = 0;
   if (o === G.ME) {
     snd(200, 0.6, 'sawtooth', 0.06, 900);
     track('missiles');
   }
   return '';
+}
+
+export function launchNuke(o: number, tx: number, ty: number): string {
+  const p = G.P[o];
+  if (!p?.cnt.silo) return 'Нужна ракетная шахта';
+  const ae = allyErr(o, tx, ty);
+  if (ae) return ae;
+  const s = nearestB(o, 'silo', tx, ty, NR);
+  if (!s) return `Цель дальше ${NR} км от ваших шахт`;
+  if (p.money < NCOST) return `Нужно ${NCOST} монет`;
+  p.money -= NCOST;
+  const d = Math.hypot(tx - s.x, ty - s.y);
+  G.PR.push({
+    k: 'n',
+    o,
+    sx: s.x + 0.5,
+    sy: s.y + 0.5,
+    tx,
+    ty,
+    x: s.x + 0.5,
+    y: s.y + 0.5,
+    t: 0,
+    dur: Math.max(8, d / 6),
+    w: 0,
+    hp: 6,
+  });
+  s.lt = performance.now();
+  s.nk = 1;
+  ring(s.x + 0.5, s.y + 0.5, 3, '#ff5a3a', 0.8);
+  say(`${o === G.ME ? 'Вы запустили' : `${G.NAMES[o]} запустила`} ядерную ракету!`);
+  if (inView(s.x, s.y) || o === G.ME) snd(120, 1.2, 'sawtooth', 0.1, 40);
+  if (o === G.ME) track('nukes');
+  return '';
+}
+
+function nukeFx(x: number, y: number): void {
+  G.NK.push({ x, y, t0: performance.now() });
+  if (G.NK.length > 4) G.NK.shift();
+  G.shake = Math.max(G.shake, inView(x, y) ? 34 : 16);
+  snd(60, 2.6, 'sawtooth', 0.22, 16);
+  setTimeout(() => snd(110, 1.4, 'square', 0.12, 25), 150);
+  setTimeout(() => snd(220, 0.7, 'sawtooth', 0.08, 40), 500);
+  scorch(x, y, NRK * 1.15);
+  sparks(x, y, 60, 9, ['#fff3c0', '#ffb02e', '#ff6b2e', '#ffe27a'], 0.5);
+  ring(x, y, NRD * 1.5, '#fff3c0', 1.6);
+  ring(x, y, NRK * 1.2, '#ff9a3a', 1.1);
+}
+
+function nukeBlast(x: number, y: number, by?: number): void {
+  nukeFx(x, y);
+  const hit = new Set<number>();
+  for (const b of G.B) {
+    if (b.dead) continue;
+    const d = Math.hypot(b.x + 0.5 - x, b.y + 0.5 - y);
+    if (d > NRD) continue;
+    hit.add(b.o);
+    if (d <= NRK) b.hp = 0;
+    else b.hp -= b.max * 1.2 * (1 - (d - NRK) / (NRD - NRK));
+    if (b.hp <= 0) destroyB(b);
+    else sparks(b.x + 0.5, b.y + 0.5, 6, 3, ['#ffb02e', '#555'], 0.3);
+  }
+  for (const u of G.U) {
+    if (u.dead || u.k === 'plane') continue;
+    if (Math.hypot(u.x - x, u.y - y) <= NRD) hitUnit(u, 9999, by, 'nuke');
+  }
+  for (const p of G.PR) {
+    if (!p.dead && Math.hypot(p.x - x, p.y - y) <= NRK) p.dead = true;
+  }
+  for (let yy = Math.floor(y - NRK); yy <= Math.ceil(y + NRK); yy++) {
+    for (let xx = Math.floor(x - NRK); xx <= Math.ceil(x + NRK); xx++) {
+      if (xx < 0 || yy < 0 || xx >= G.W || yy >= G.H) continue;
+      if (Math.hypot(xx + 0.5 - x, yy + 0.5 - y) > NRK * (0.88 + 0.12 * hash(xx, yy, 5))) continue;
+      G.OWN[yy * G.W + xx] = 0;
+    }
+  }
+  G.ownDirty = true;
+  G.tilesDirty = true;
+  if (by) {
+    for (let k = 1; k <= G.NN; k++) if (k !== by && G.P[k]?.alive) hostile(by, k, 25);
+    for (const v of hit) if (v !== by && isAlly(by, v)) breakAlliance(by, v);
+  }
+  recount();
 }
 
 export function launchDrones(o: number, tx: number, ty: number): string {
@@ -859,7 +974,7 @@ function unitCount(o: number): number {
   return n;
 }
 
-function mkUnit(k: 'tank' | 'rpg' | 'plane', o: number, x: number, y: number): Unit {
+function mkUnit(k: 'tank' | 'rpg' | 'plane' | 'howitzer', o: number, x: number, y: number): Unit {
   const d = UN[k];
   let hp = d.hp;
   if (k === 'tank') hp *= 1 + 0.15 * bonusUp(o, 'armor') + 0.2 * tk(o, 'army3');
@@ -871,7 +986,7 @@ function mkUnit(k: 'tank' | 'rpg' | 'plane', o: number, x: number, y: number): U
     y: y + 0.5,
     hp,
     max: hp,
-    cd: 0.5,
+    cd: k === 'howitzer' ? 1.5 : 0.5,
     a: 0,
     ta: 0,
     dead: false,
@@ -885,7 +1000,7 @@ function mkUnit(k: 'tank' | 'rpg' | 'plane', o: number, x: number, y: number): U
   return u;
 }
 
-export function orderGround(o: number, k: 'tank' | 'rpg', tx: number, ty: number, srcType: string): string {
+export function orderGround(o: number, k: 'tank' | 'rpg' | 'howitzer', tx: number, ty: number, srcType: string): string {
   const p = G.P[o];
   if (!p) return 'Ошибка';
   const lim = p.human ? 30 : 14;
@@ -916,6 +1031,7 @@ export function orderGround(o: number, k: 'tank' | 'rpg', tx: number, ty: number
       G.RS.tanks++;
       track('tanks');
     }
+    if (k === 'howitzer') track('howitzers');
     snd(160, 0.25, 'square', 0.05, 110);
   }
   return '';
@@ -935,14 +1051,17 @@ export function orderPlane(o: number, tx: number, ty: number): string {
   const pc = planeCost(o);
   if (p.money < pc) return 'Не хватает денег';
   p.money -= pc;
-  const u = mkUnit('plane', o, src.x, src.y);
+  const u = mkUnit('plane', o, src.x + 0.22, src.y + 0.035);
   u.tx = tx;
   u.ty = ty;
-  u.hx = src.x + 0.5;
-  u.hy = src.y + 0.5;
+  u.hx = src.x + 0.72;
+  u.hy = src.y + 0.535;
   u.bombs = 4 + 2 * tk(o, 'air7');
   u.bt = 0;
   u.ret = false;
+  u.age = 0;
+  u.alt = 0;
+  src.lt = performance.now();
   if (o === G.ME) {
     track('planes');
     snd(300, 0.5, 'sawtooth', 0.05, 700);
@@ -951,7 +1070,9 @@ export function orderPlane(o: number, tx: number, ty: number): string {
 }
 
 function findTarget(u: Unit): { unit?: Unit; b?: Building } | null {
-  const R = UN[u.k].rg;
+  const d = UN[u.k];
+  const R = d.rg;
+  const mn = d.min || 0;
   let best: { unit?: Unit; b?: Building } | null = null;
   let bs = 1e9;
   for (const v of G.U) {
@@ -960,8 +1081,19 @@ function findTarget(u: Unit): { unit?: Unit; b?: Building } | null {
     const ay = v.y - u.y;
     if (ax > R || ax < -R || ay > R || ay < -R || isFriend(v.o, u.o)) continue;
     const dd = Math.hypot(ax, ay);
-    if (dd > R) continue;
-    const pri = u.k === 'rpg' && v.k === 'tank' ? 0 : u.k === 'tank' && v.k === 'tank' ? 1 : 2;
+    if (dd > R || dd < mn) continue;
+    const pri =
+      u.k === 'howitzer'
+        ? v.k === 'tank' || v.k === 'howitzer'
+          ? 0
+          : v.k === 'rpg'
+            ? 1
+            : 2
+        : u.k === 'rpg' && v.k === 'tank'
+          ? 0
+          : u.k === 'tank' && v.k === 'tank'
+            ? 1
+            : 2;
     const s = pri * 10 + dd;
     if (s < bs) {
       bs = s;
@@ -975,7 +1107,7 @@ function findTarget(u: Unit): { unit?: Unit; b?: Building } | null {
     const ay = b.y + 0.5 - u.y;
     if (ax > R || ax < -R || ay > R || ay < -R || isFriend(b.o, u.o)) continue;
     const dd = Math.hypot(ax, ay);
-    if (dd <= R && dd < bs) {
+    if (dd <= R && dd >= mn && dd < bs) {
       bs = dd;
       best = { b };
     }
@@ -1033,7 +1165,56 @@ function stepUnit(u: Unit, dt: number): void {
   u.ta = u.a;
 }
 
+function howitzerFire(u: Unit, tg: { unit?: Unit; b?: Building }): void {
+  const tx = tg.unit ? tg.unit.x : tg.b!.x + 0.5;
+  const ty = tg.unit ? tg.unit.y : tg.b!.y + 0.5;
+  u.ta = Math.atan2(ty - u.y, tx - u.x);
+  const d = Math.hypot(tx - u.x, ty - u.y);
+  const sc = 0.3 + d * 0.05;
+  const a = rng() * 6.283;
+  const r = Math.sqrt(rng()) * sc;
+  const dm = (UN.howitzer.shell || 70) * (1 + 0.2 * tk(u.o, 'army5'));
+  G.PR.push({
+    k: 's',
+    o: u.o,
+    sx: u.x,
+    sy: u.y,
+    tx: tx + Math.cos(a) * r,
+    ty: ty + Math.sin(a) * r,
+    x: u.x,
+    y: u.y,
+    t: 0,
+    dur: Math.max(0.9, d / 9),
+    w: 0,
+    hp: 1,
+    dmg: dm,
+  });
+  u.fireAt = performance.now();
+  const ca = Math.cos(u.ta);
+  const sa = Math.sin(u.ta);
+  if (PF.set.part) {
+    for (let i = 0; i < 5; i++) {
+      G.PT.push({
+        x: u.x + ca * 1.1 + (rng() - 0.5) * 0.4,
+        y: u.y + sa * 1.1 + (rng() - 0.5) * 0.4,
+        vx: ca * 0.8 + (rng() - 0.5) * 0.5,
+        vy: sa * 0.8 + (rng() - 0.5) * 0.5,
+        life: 0.9 + rng() * 0.5,
+        max: 1.4,
+        c: '#e6e6ea',
+        s: 0.45,
+      });
+    }
+  }
+  ring(u.x, u.y, 1.6, '#d8c9a0', 0.35);
+  if (inView(u.x, u.y)) snd(100, 0.35, 'sawtooth', 0.09, 45);
+}
+
 function unitFire(u: Unit, tg: { unit?: Unit; b?: Building }): void {
+  if (u.k === 'howitzer') {
+    howitzerFire(u, tg);
+    return;
+  }
   const d = UN[u.k];
   let dm: number;
   if (tg.unit) {
@@ -1049,7 +1230,42 @@ function unitFire(u: Unit, tg: { unit?: Unit; b?: Building }): void {
   if (u.k === 'tank') dm *= 1 + 0.2 * tk(u.o, 'army5');
   const tx = tg.unit ? tg.unit.x : tg.b!.x + 0.5;
   const ty = tg.unit ? tg.unit.y : tg.b!.y + 0.5;
-  G.BM.push({ x1: u.x, y1: u.y, x2: tx, y2: ty, life: 0.12, c: u.k === 'rpg' ? '#ff9a4a' : '#ffe9a0' });
+  const ca = Math.cos(u.ta);
+  const sa = Math.sin(u.ta);
+  const mz = u.k === 'tank' ? 0.72 : 0.5;
+  u.fireAt = performance.now();
+  G.BM.push({
+    x1: u.x + ca * mz,
+    y1: u.y + sa * mz,
+    x2: tx,
+    y2: ty,
+    life: 0.12,
+    c: u.k === 'rpg' ? '#ff9a4a' : '#ffe9a0',
+  });
+  if (PF.set.part) {
+    G.PT.push({
+      x: u.x + ca * mz,
+      y: u.y + sa * mz,
+      vx: ca * 0.5,
+      vy: sa * 0.5,
+      life: 0.55,
+      max: 0.55,
+      c: '#d8d8dc',
+      s: 0.28,
+    });
+    if (u.k === 'rpg') {
+      G.PT.push({
+        x: u.x - ca * 0.35,
+        y: u.y - sa * 0.35,
+        vx: -ca * 0.9,
+        vy: -sa * 0.9,
+        life: 0.6,
+        max: 0.6,
+        c: '#e6e0d0',
+        s: 0.35,
+      });
+    }
+  }
   sparks(tx, ty, 4, 2, ['#ffb02e', '#ffe27a'], 0.25);
   if (inView(u.x, u.y)) snd(u.k === 'rpg' ? 320 : 220, 0.1, 'square', 0.03, 90);
   if (tg.unit) hitUnit(tg.unit, dm, u.o, u.k);
@@ -1096,6 +1312,9 @@ function updateUnits(dt: number): void {
       const dy = ty - u.y;
       const dist = Math.hypot(dx, dy);
       u.a = Math.atan2(dy, dx);
+      u.age = (u.age || 0) + dt;
+      u.alt = Math.min(1, u.age / 1.4);
+      if (u.ret) u.alt = Math.min(u.alt, Math.max(0, (dist - 0.15) / 4));
       if (!u.ret && dist < 0.7) {
         u.bt = (u.bt || 0) - dt;
         if (u.bt <= 0 && (u.bombs || 0) > 0) {
@@ -1104,14 +1323,25 @@ function updateUnits(dt: number): void {
           boom(u.x + (rng() - 0.5) * 1.6, u.y + (rng() - 0.5) * 1.6, 1.25, 58 * (1 + 0.3 * tk(u.o, 'air3')), u.o);
           if (u.bombs! <= 0) u.ret = true;
         }
-      } else if (u.ret && dist < 0.8) {
+      } else if (u.ret && dist < 0.5) {
         u.dead = true;
       } else {
-        const m = Math.min(UN.plane.sp * (1 + 0.2 * tk(u.o, 'air5')) * dt, dist);
-        if (!(!u.ret && dist < 0.7)) {
-          u.x += (dx / (dist || 1)) * m;
-          u.y += (dy / (dist || 1)) * m;
-        }
+        const kf = u.ret ? Math.min(1, 0.3 + dist / 5) : Math.min(1, 0.22 + u.age * 0.56);
+        const m = Math.min(UN.plane.sp * (1 + 0.2 * tk(u.o, 'air5')) * kf * dt, dist);
+        u.x += (dx / (dist || 1)) * m;
+        u.y += (dy / (dist || 1)) * m;
+      }
+      if (u.alt > 0.45 && PF.set.part && rng() < dt * 26) {
+        G.PT.push({
+          x: u.x - Math.cos(u.a) * 0.5,
+          y: u.y - Math.sin(u.a) * 0.5,
+          vx: 0,
+          vy: 0,
+          life: 0.9,
+          max: 0.9,
+          c: '#f4f7ff',
+          s: 0.14,
+        });
       }
       continue;
     }
@@ -1135,12 +1365,24 @@ function updateUnits(dt: number): void {
           unitFire(u, tg);
         }
         u.ta = Math.atan2(ty - u.y, tx - u.x);
+        u.idle = 0;
         continue;
       }
     }
     u.hold = false;
     stepUnit(u, dt);
     if (u.hold) {
+      u.idle = (u.idle || 0) + dt;
+      if (u.idle >= 20) {
+        u.dead = true;
+        ring(u.x, u.y, 1, '#ffffff', 0.5);
+        continue;
+      }
+    } else {
+      u.idle = 0;
+    }
+    if (u.k === 'howitzer' && !u.hold) u.cd = Math.max(u.cd, 0.9);
+    if (u.hold && u.k !== 'howitzer') {
       u.cap -= dt;
       if (u.cap <= 0) {
         u.cap = 1.5;
@@ -1229,6 +1471,28 @@ function aiThink(k: number): void {
   if (!tb.length) return;
   let t = tb[(rng() * tb.length) | 0];
   if (rng() < 0.1) t = tb.find((b) => b.cap) || t;
+  if (!G.MISSION && G.diff >= 1 && G.gameT > 420 && c('silo') >= 1 && p.nk !== 1 && G.gameT > (p.nkT || 0)) {
+    p.nkT = G.gameT + 90;
+    if (G.P.filter((q) => q && q.nk === 1 && q.alive).length < 2 && rng() < 0.3) {
+      p.nk = 1;
+      say(`${G.NAMES[k]} начала ядерную программу!`);
+    }
+  }
+  if (p.nk === 1) {
+    if (c('silo') < 1) {
+      p.nk = 0;
+      p.nkT = G.gameT + 120;
+    } else {
+      if (p.money >= NCOST) {
+        const cb = tb.find((b) => b.cap) || t;
+        if (launchNuke(k, cb.x + 0.5, cb.y + 0.5) === '') {
+          p.nk = 0;
+          p.nkT = G.gameT + 150;
+        }
+      }
+      return;
+    }
+  }
   const tx = t.x + 0.5 + (rng() - 0.5) * 1.4;
   const ty = t.y + 0.5 + (rng() - 0.5) * 1.4;
   const r = rng();
@@ -1245,6 +1509,12 @@ function aiThink(k: number): void {
     const ax = Math.round(cap.x + (rng() - 0.5) * 5);
     const ay = Math.round(cap.y + (rng() - 0.5) * 5);
     if (orderGround(k, 'tank', ax, ay, 'factory') === '') return;
+  }
+  if (c('factory') && G.gameT > 180 && p.money >= UN.howitzer.c + 60 && p.sol >= UN.howitzer.sol && (p.ucnt.howitzer || 0) < (mode === 'tanks' ? 3 : 2) && r < 0.25) {
+    const cap = tb.find((b) => b.cap) || t;
+    const ax = Math.round(cap.x + (rng() - 0.5) * 6);
+    const ay = Math.round(cap.y + (rng() - 0.5) * 6);
+    if (orderGround(k, 'howitzer', ax, ay, 'factory') === '') return;
   }
   if (c('airfield') && p.money >= UN.plane.c + 60 && r < 0.4 && orderPlane(k, tx, ty) === '') return;
   if (c('silo') && p.money >= MCOST + 60 && r < 0.5 && launchMissile(k, tx, ty) === '') return;
@@ -1518,7 +1788,7 @@ function updatePlay(dt: number): void {
     let td = samR(b.o);
     let isU = false;
     for (const p of G.PR) {
-      if (p.dead || isFriend(p.o, b.o) || p.t < 0) continue;
+      if (p.dead || p.k === 's' || isFriend(p.o, b.o) || p.t < 0) continue;
       const d = Math.hypot(p.x - b.x - 0.5, p.y - b.y - 0.5);
       if (d < td) {
         td = d;
@@ -1537,9 +1807,13 @@ function updatePlay(dt: number): void {
     }
     if (tg) {
       b.cd = 1.4;
-      G.BM.push({ x1: b.x + 0.5, y1: b.y + 0.5, x2: tg.x, y2: tg.y, life: 0.18, c: '#9ff' });
+      const ey =
+        !isU && (tg.k === 'm' || tg.k === 'n')
+          ? tg.y - Math.sin(Math.PI * Math.min(1, Math.max(0, tg.t))) * arcOf(tg)
+          : tg.y;
+      G.BM.push({ x1: b.x + 0.5, y1: b.y + 0.5, x2: tg.x, y2: ey, life: 0.18, c: '#9ff' });
       if (inView(b.x, b.y)) snd(900, 0.12, 'square', 0.03, 300);
-      const hitp = (isU ? 0.65 : tg.k === 'm' ? 0.7 : 0.8) * Math.min(1, (G.P[b.o]?.eff || 0) + 0.2);
+      const hitp = (isU ? 0.65 : tg.k === 'n' ? 0.55 : tg.k === 'm' ? 0.7 : 0.8) * Math.min(1, (G.P[b.o]?.eff || 0) + 0.2);
       if (rng() < hitp) {
         if (isU) {
           tg.hp -= 40;
@@ -1557,7 +1831,19 @@ function updatePlay(dt: number): void {
           tg.hp--;
           if (tg.hp <= 0) {
             tg.dead = true;
-            boom(tg.x, tg.y, 0.8, 0);
+            if (tg.k === 'n') {
+              ring(tg.x, ey, 3, '#ffd27a', 0.7);
+              ring(tg.x, ey, 1.6, '#fff', 0.4);
+              sparks(tg.x, ey, 40, 6, ['#ffb02e', '#ff6b2e', '#ffe27a', '#fff'], 0.5);
+              if (inView(tg.x, ey)) {
+                G.shake = Math.max(G.shake, 10);
+                snd(90, 0.6, 'sawtooth', 0.14, 30);
+              }
+              say('Ядерная ракета перехвачена ПВО!');
+              if (b.o === G.ME) track('nukeStops');
+            } else {
+              boom(tg.x, ey, 0.8, 0);
+            }
             if (b.o === G.ME) {
               G.RS.sam++;
               track('samKills');
@@ -1573,7 +1859,7 @@ function updatePlay(dt: number): void {
   if (tk(G.ME, 'fort6')) {
     for (const b of G.B) if (!b.dead && b.o === G.ME && b.hp < b.max) b.hp = Math.min(b.max, b.hp + 0.6 * dt);
   }
-  let inc: 'm' | 'd' | null = null;
+  let inc: 'm' | 'd' | 'n' | null = null;
   for (const p of G.PR) {
     if (p.dead) continue;
     p.t += dt / p.dur;
@@ -1584,19 +1870,29 @@ function updatePlay(dt: number): void {
     if (p.k === 'd') {
       p.x += Math.sin(G.gameT * 6 + p.w) * 0.15;
       p.y += Math.cos(G.gameT * 5 + p.w) * 0.15;
-    } else if (rng() < dt * 40) {
-      G.PT.push({ x: p.x, y: p.y, vx: 0, vy: 0, life: 0.5, max: 0.5, c: '#ddd', s: 0.25 });
+      if (rng() < dt * 40) G.PT.push({ x: p.x, y: p.y, vx: 0, vy: 0, life: 0.5, max: 0.5, c: '#ddd', s: 0.25 });
     }
-    if (p.o !== G.ME) {
+    if (p.o !== G.ME && p.k !== 's' && inc !== 'n') {
       const tx = Math.floor(p.tx);
       const ty = Math.floor(p.ty);
-      if (tx >= 0 && ty >= 0 && tx < G.W && ty < G.H && G.OWN[ty * G.W + tx] === G.ME && p.t > 0.05) {
+      if (p.k === 'n') {
+        const scMe = G.SC[G.ME];
+        if (
+          p.t > 0.02 &&
+          ((scMe && Math.hypot(p.tx - scMe.x, p.ty - scMe.y) < NRD + 6) ||
+            (tx >= 0 && ty >= 0 && tx < G.W && ty < G.H && G.OWN[ty * G.W + tx] === G.ME))
+        ) {
+          inc = 'n';
+        }
+      } else if (tx >= 0 && ty >= 0 && tx < G.W && ty < G.H && G.OWN[ty * G.W + tx] === G.ME && p.t > 0.05) {
         inc = p.k;
       }
     }
     if (p.t >= 1) {
       p.dead = true;
       if (p.k === 'm') boom(p.tx, p.ty, 3, 150, p.o);
+      else if (p.k === 'n') nukeBlast(p.tx, p.ty, p.o);
+      else if (p.k === 's') boom(p.tx, p.ty, 1.6, p.dmg || 70, p.o);
       else boom(p.tx, p.ty, 1.2, 34, p.o);
     }
   }
@@ -1635,6 +1931,10 @@ export function updateWorld(dt: number): void {
   G.PT = G.PT.filter((p) => p.life > 0);
   for (const b of G.BM) b.life -= dt;
   G.BM = G.BM.filter((b) => b.life > 0);
+  if (G.NK.length) {
+    const nw = performance.now();
+    G.NK = G.NK.filter((n) => nw - n.t0 < 17000);
+  }
   G.shake *= Math.pow(0.02, dt);
   compact();
 }
@@ -1672,11 +1972,13 @@ export function doAct(kind: string, a: { t?: string; x?: number; y?: number; tx?
   const me = G.ME;
   if (kind === 'place') return place(me, a.t!, a.x!, a.y!);
   if (kind === 'missile') return launchMissile(me, a.tx!, a.ty!);
+  if (kind === 'nuke') return launchNuke(me, a.tx!, a.ty!);
   if (kind === 'drone') return launchDrones(me, a.tx!, a.ty!);
   if (kind === 'assault') return assault(me, a.x!, a.y!);
   if (kind === 'repair') return repair(a.b!);
   if (kind === 'tank') return orderGround(me, 'tank', a.x!, a.y!, 'factory');
   if (kind === 'rpg') return orderGround(me, 'rpg', a.x!, a.y!, 'barracks');
+  if (kind === 'howitzer') return orderGround(me, 'howitzer', a.x!, a.y!, 'factory');
   if (kind === 'plane') return orderPlane(me, a.tx!, a.ty!);
   return '';
 }

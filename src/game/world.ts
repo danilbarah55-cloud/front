@@ -1,4 +1,4 @@
-import { ALLPAL, BT, SIZES, TRGB } from './constants.ts';
+import { ALLPAL, BT, NR, NRD, NRK, SIZES, TRGB, UN } from './constants.ts';
 import { PF, techLv, upLv } from './profile.ts';
 
 export interface Building {
@@ -12,10 +12,36 @@ export interface Building {
   cd: number;
   dead: boolean;
   born?: number;
+  lt?: number;
+  nk?: number;
+}
+
+export interface Wreck {
+  x: number;
+  y: number;
+  a: number;
+  ta: number;
+  k: 'tank' | 'howitzer';
+  o: number;
+  t0: number;
+}
+
+export interface Rubble {
+  x: number;
+  y: number;
+  t: string;
+  cap: boolean;
+  t0: number;
+}
+
+export interface NukeFx {
+  x: number;
+  y: number;
+  t0: number;
 }
 
 export interface Projectile {
-  k: 'm' | 'd';
+  k: 'm' | 'd' | 'n' | 's';
   o: number;
   sx: number;
   sy: number;
@@ -27,12 +53,13 @@ export interface Projectile {
   dur: number;
   w: number;
   hp: number;
+  dmg?: number;
   dead?: boolean;
 }
 
 export interface Unit {
   id: number;
-  k: 'tank' | 'rpg' | 'plane';
+  k: 'tank' | 'rpg' | 'plane' | 'howitzer';
   o: number;
   x: number;
   y: number;
@@ -55,6 +82,16 @@ export interface Unit {
   bt?: number;
   ret?: boolean;
   tg?: { unit?: Unit; b?: Building } | null;
+  alt?: number;
+  fireAt?: number;
+  ph?: number;
+  mvS?: number;
+  rta?: number;
+  _lx?: number;
+  _ly?: number;
+  _rt?: number;
+  age?: number;
+  idle?: number;
   sx?: number;
   sy?: number;
   sa?: number;
@@ -79,6 +116,8 @@ export interface PlayerState {
   human: boolean;
   col: string;
   skin: string;
+  nk?: number;
+  nkT?: number;
 }
 
 export interface MissionState {
@@ -127,6 +166,9 @@ export const G = {
   BM: [] as Array<{ x1: number; y1: number; x2: number; y2: number; life: number; c: string }>,
   P: [null] as Array<PlayerState | null>,
   U: [] as Unit[],
+  WK: [] as Wreck[],
+  RB: [] as Rubble[],
+  NK: [] as NukeFx[],
   uid: 1,
 
   COAST: [] as number[],
@@ -150,13 +192,14 @@ export const G = {
   GAMEMODE: 'battle',
   RS: { tankKills: 0, rpgKills: 0, annex: 0, sam: 0, built: 0, tanks: 0, assaults: 0, lost: 0, shared: false },
   alarmT: 0,
-  alarmK: 'm' as 'm' | 'd',
+  alarmK: 'm' as 'm' | 'd' | 'n',
   paused: false,
   sndOn: true,
 
   cw: 300,
   ch: 300,
   dpr: 1,
+  dprCap: 3,
   fitZ: 2,
   cam: { cx: 80, cy: 52, z: 3 },
   aim: { on: false, tx: 0, ty: 0, fx: 0, fy: 0, err: '', cost: 15, touch: false },
@@ -226,7 +269,7 @@ export function resizeCanvas(): void {
   const cvs = document.getElementById('cv') as HTMLCanvasElement | null;
   if (!wrap || !cvs) return;
   const r = wrap.getBoundingClientRect();
-  G.dpr = Math.min(3, window.devicePixelRatio || 1);
+  G.dpr = Math.min(G.dprCap, window.devicePixelRatio || 1);
   G.cw = Math.max(100, r.width);
   G.ch = Math.max(100, r.height);
   cvs.width = Math.round(G.cw * G.dpr);
@@ -295,9 +338,8 @@ export function planeCost(o: number): number {
   return Math.round(110 * (1 - 0.2 * tk(o, 'air2') - 0.1 * tk(o, 'eco6')));
 }
 
-export function ucost(o: number, k: 'tank' | 'rpg' | 'plane'): number {
-  const base = k === 'tank' ? 90 : k === 'rpg' ? 30 : 110;
-  return Math.round(base * (1 - 0.1 * tk(o, 'eco6')));
+export function ucost(o: number, k: 'tank' | 'rpg' | 'plane' | 'howitzer'): number {
+  return Math.round(UN[k].c * (1 - 0.1 * tk(o, 'eco6')));
 }
 
 export function isAlly(a: number, b: number): boolean {
@@ -621,6 +663,32 @@ export function crater(x: number, y: number, r: number): void {
   lc.restore();
 }
 
+export function scorch(x: number, y: number, r: number): void {
+  const lc = landC.getContext('2d')!;
+  const S = G.TS;
+  lc.save();
+  lc.globalCompositeOperation = 'source-atop';
+  const g = lc.createRadialGradient(x * S, y * S, 0, x * S, y * S, r * S);
+  g.addColorStop(0, 'rgba(10,6,4,.92)');
+  g.addColorStop(0.5, 'rgba(24,14,8,.78)');
+  g.addColorStop(0.85, 'rgba(40,24,12,.45)');
+  g.addColorStop(1, 'rgba(40,24,12,0)');
+  lc.fillStyle = g;
+  lc.beginPath();
+  lc.arc(x * S, y * S, r * S, 0, Math.PI * 2);
+  lc.fill();
+  for (let i = 0; i < 26; i++) {
+    const a = rng() * 6.283;
+    const d = r * (0.5 + rng() * 0.55);
+    const rr = r * (0.08 + rng() * 0.14);
+    lc.fillStyle = `rgba(20,12,6,${0.25 + rng() * 0.3})`;
+    lc.beginPath();
+    lc.arc((x + Math.cos(a) * d) * S, (y + Math.sin(a) * d) * S, rr * S, 0, Math.PI * 2);
+    lc.fill();
+  }
+  lc.restore();
+}
+
 export function s2w(px: number, py: number) {
   return {
     x: (px - G.cw / 2) / G.cam.z + G.cam.cx,
@@ -824,17 +892,316 @@ let R_oy = 0;
 let R_u = 1;
 let R_px = 0;
 let R_py = 0;
+let RT = 0;
+let NIGHTK = 0;
+let LOD = 2;
 
 function R(x: number, y: number, w: number, h: number, c: string): void {
   gc.fillStyle = c;
   gc.fillRect(R_px + x * R_u, R_py + y * R_u, w * R_u, h * R_u);
 }
 
+function RP(x: number, y: number, r: number): void {
+  gc.beginPath();
+  gc.arc(R_px + x * R_u, R_py + y * R_u, Math.max(0.5, r * R_u), 0, Math.PI * 2);
+  gc.fill();
+}
+
+function glowAdd(x: number, y: number, r: number, rgb: string, a: number): void {
+  if (LOD < 2) return;
+  const cx = R_px + x * R_u;
+  const cy = R_py + y * R_u;
+  const rr = Math.max(1, r * R_u);
+  const g = gc.createRadialGradient(cx, cy, 0, cx, cy, rr);
+  g.addColorStop(0, `rgba(${rgb},${a})`);
+  g.addColorStop(1, `rgba(${rgb},0)`);
+  gc.globalCompositeOperation = 'lighter';
+  gc.fillStyle = g;
+  gc.beginPath();
+  gc.arc(cx, cy, rr, 0, Math.PI * 2);
+  gc.fill();
+  gc.globalCompositeOperation = 'source-over';
+}
+
+function smokeUp(
+  x: number,
+  y: number,
+  t: number,
+  per: number,
+  n: number,
+  rise: number,
+  r0: number,
+  r1: number,
+  col: string,
+  a0: number,
+  ph0: number,
+): void {
+  const nn = LOD >= 2 ? n : LOD === 1 ? Math.max(1, n >> 1) : 1;
+  for (let k = 0; k < nn; k++) {
+    const ph = (t / per + k / nn + ph0) % 1;
+    gc.globalAlpha = a0 * (1 - ph) * Math.min(1, ph * 5);
+    gc.fillStyle = col;
+    RP(x + Math.sin(ph * 4 + k * 1.7) * 0.45 * ph, y - ph * rise, r0 + (r1 - r0) * ph);
+  }
+  gc.globalAlpha = 1;
+}
+
 function drawFlag(x: number, y: number, o: string, t: number, big: boolean): void {
-  R(x, y, 0.5, big ? 4.5 : 3.5, '#2a2a2a');
-  for (let i = 0; i < 5; i++) {
-    const wv = Math.sin(t / 180 + i * 0.9) * 0.45;
-    R(x + 0.5 + i * 0.55, y + 0.15 + wv, 0.6, big ? 1.9 : 1.3, i % 2 === 0 ? o : '#ffffff');
+  const hgt = big ? 4.6 : 3.6;
+  const fw = big ? 3.4 : 2.4;
+  const fh = big ? 1.9 : 1.3;
+  const n = LOD >= 1 ? 9 : 4;
+  R(x, y, 0.5, hgt, '#2a2a2a');
+  R(x - 0.12, y - 0.3, 0.74, 0.34, '#d4af37');
+  for (let i = 0; i < n; i++) {
+    const k = i / (n - 1);
+    const ph = t / 170 - i * (9 / n) * 0.8;
+    const wv = Math.sin(ph) * 0.42 * (0.2 + k * 0.8) * (big ? 1 : 0.8);
+    const sx = x + 0.5 + i * (fw / n);
+    const sy = y + 0.15 + wv;
+    const w = fw / n + 0.06;
+    R(sx, sy, w, fh * 0.55, o);
+    R(sx, sy + fh * 0.55, w, fh * 0.45, '#f4f4f4');
+    if (LOD >= 1) R(sx, sy, w, fh, `rgba(0,0,0,${0.1 * (1 - Math.cos(ph))})`);
+  }
+}
+
+function drawDamage(b: Building, t: number): void {
+  const f = b.hp / b.max;
+  if (f > 0.55) return;
+  const sev = f < 0.25 ? 2 : 1;
+  const ph = ((b.x * 5 + b.y * 3) % 11) / 11;
+  smokeUp(3.5, 4.6, t, 2200, sev === 2 ? 5 : 3, 6, 0.5, 1.8, sev === 2 ? '#232323' : '#4a4a4a', 0.65, ph);
+  if (LOD >= 1) smokeUp(7, 3.6, t, 2600, sev === 2 ? 4 : 2, 7, 0.5, 2, '#303030', 0.55, ph * 0.7);
+  const nf = LOD >= 1 ? (sev === 2 ? 4 : 2) : 1;
+  for (let i = 0; i < nf; i++) {
+    const fx = 1.5 + ((i * 2.7 + ph * 9) % 7);
+    const fy = 4.8 + hash(b.x + i, b.y, 9) * 2.4;
+    const fl = (t / 90 + i * 3.1) | 0;
+    const hg = 0.9 + 0.9 * hash(fl, i, b.x) + (sev === 2 ? 0.6 : 0);
+    R(fx, fy - hg, 0.9, hg, '#ff7a1a');
+    R(fx + 0.2, fy - hg * 0.7, 0.5, hg * 0.7, '#ffd23f');
+  }
+}
+
+const CARC = ['#d94f4f', '#4f7fd9', '#e8c547', '#f0f0f0', '#59b36a'];
+function carDraw(x: number, y: number, col: string, dir: number, night: boolean): void {
+  R(x, y, 1, 0.4, col);
+  R(x + 0.25, y - 0.14, 0.5, 0.2, '#dfe6f2');
+  R(x + 0.12, y + 0.34, 0.24, 0.14, '#111');
+  R(x + 0.64, y + 0.34, 0.24, 0.14, '#111');
+  if (night) {
+    R(dir > 0 ? x + 0.95 : x - 0.05, y + 0.08, 0.1, 0.2, '#fff7c0');
+    glowAdd(dir > 0 ? x + 1.4 : x - 0.4, y + 0.2, 0.9, '255,240,170', 0.3);
+  }
+}
+
+function drawCity(b: Building, t: number, o: string, ph: number): void {
+  const night = NIGHTK > 0.3;
+  const pf = ph / 97;
+  R(0, 8, 10, 1.6, '#8d917f');
+  R(0, 8.55, 10, 1.05, '#4a4d57');
+  R(0, 8.55, 10, 0.12, '#6a6e7a');
+  for (let i = 0; i < 6; i++) R(0.35 + i * 1.7, 9.05, 0.8, 0.13, '#d9d4b0');
+  R(0.8, 4.6, 3.2, 4, '#e8e2d0');
+  R(0.8, 4, 3.2, 1, o);
+  R(0.8, 4, 3.2, 0.35, 'rgba(255,255,255,.5)');
+  R(0.8, 8.1, 3.2, 0.4, 'rgba(0,0,0,.12)');
+  R(4.8, 2.4, 3.6, 6.2, '#c6cad6');
+  R(4.8, 1.8, 3.6, 1, o);
+  R(8.4, 2.4, 0.6, 6.2, '#9ea3b4');
+  R(4.8, 2.4, 0.35, 6.2, 'rgba(255,255,255,.18)');
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 2; j++) {
+      const hh = hash(b.x * 3 + i, b.y * 5 + j, 11);
+      let c: string;
+      if (night) {
+        c =
+          hh < 0.78
+            ? LOD >= 1 && hash(b.x + i, b.y + j, (t / 2300) | 0) < 0.06
+              ? '#9fd0ff'
+              : '#ffd978'
+            : '#262c48';
+      } else {
+        c =
+          hh < 0.1
+            ? '#ffe27a'
+            : LOD >= 1 && ((t / 1800 + hh * 9) % 3) < 0.12
+              ? '#a9b8d8'
+              : '#7f8fb8';
+      }
+      R(5.3 + j * 1.6, 3.3 + i * 1.7, 0.9, 0.9, c);
+    }
+  }
+  R(1.4, 5.6, 0.8, 0.8, night ? (hash(b.x, b.y, 3) < 0.8 ? '#ffd978' : '#262c48') : '#ffe27a');
+  R(2.6, 5.6, 0.8, 0.8, night ? (hash(b.x, b.y, 4) < 0.7 ? '#ffd978' : '#262c48') : '#8aa2c8');
+  R(1.9, 7.2, 1, 1.4, '#6b5a3a');
+  R(3.3, 3, 0.45, 1.2, '#8a6a5a');
+  smokeUp(3.52, 3, t, 2800, 3, 3.4, 0.3, 1, '#d2d2da', 0.5, pf);
+  R(2.5, 2.6, 0.35, 1.5, '#e0a800');
+  R(2.35, 4, 0.65, 0.2, '#8a6a00');
+  if (LOD >= 1) {
+    const cs = Math.cos(t / 2300 + pf * 6);
+    const mx = 2.68;
+    const bx0 = mx - 1.0 * cs;
+    const bx1 = mx + 1.9 * cs;
+    const hb = 0.5 + 0.4 * Math.sin(t / 900 + pf * 4);
+    R(Math.min(bx0, bx1), 2.5, Math.abs(bx1 - bx0) + 0.05, 0.2, '#e0a800');
+    R(bx0 - 0.15, 2.4, 0.3, 0.4, '#d9d9d9');
+    R(bx1 - 0.04, 2.7, 0.08, hb, '#555');
+    R(bx1 - 0.14, 2.7 + hb, 0.28, 0.22, '#d88a2a');
+  } else {
+    R(1.8, 2.5, 2, 0.2, '#e0a800');
+  }
+  R(9, 5, 0.4, 3.6, '#555');
+  const bl = (t + ph * 37) % 1500 < 200;
+  R(8.7, 4.6, 1, 0.5, bl ? '#ff3030' : '#5a1212');
+  if (bl) glowAdd(9.2, 4.85, 1.5, '255,60,60', 0.4);
+  if (LOD >= 1) {
+    const x1 = ((t / 2800 + pf) % 1) * 9;
+    const x2 = 9 - ((t / 3600 + pf * 1.7) % 1) * 9;
+    carDraw(x1, 8.6, CARC[(b.x + b.y) % 5], 1, night);
+    carDraw(x2, 9.07, CARC[(b.x * 2 + b.y + 3) % 5], -1, night);
+  }
+  if (b.cap) drawFlag(5.8, -2.6, o, t, true);
+  if (night) glowAdd(5, 6, 5.8, '255,196,100', 0.1 * NIGHTK);
+}
+
+function drawSilo(b: Building, t: number, o: string, ph: number): void {
+  const age = b.lt ? t - b.lt : 1e9;
+  const nk = Boolean(b.nk);
+  const lim = nk ? 2000 : 1100;
+  R(0, 7, 10, 2.6, '#4a4f5c');
+  R(0.4, 7, 9.2, 0.5, '#6a7080');
+  for (let i = 0; i < 8; i++) R(0.4 + i * 1.15, 9.12, 0.62, 0.42, i % 2 ? '#1c1c1c' : '#f6c744');
+  R(2.4, 5.2, 5.2, 2.2, '#2c303a');
+  R(2.4, 5.2, 5.2, 0.3, '#4a5060');
+  R(3.2, 5.9, 1.6, 1, '#f6c744');
+  R(5.2, 5.9, 1.6, 1, '#f6c744');
+  let od = 0;
+  if (age < lim + 500) od = age < 300 ? age / 300 : age < lim ? 1 : 1 - (age - lim) / 500;
+  const sh = od * 1.25;
+  if (sh > 0) R(5 - sh, 5.45, 2 * sh, 0.35, '#05060a');
+  let dy = 0;
+  if (age < 1e9) {
+    const rs = nk ? 2600 : 1500;
+    dy = age < rs ? 8 : Math.max(0, 8 * (1 - (age - rs) / 2800));
+  }
+  if (dy < 7.6) {
+    if (dy > 0) {
+      gc.save();
+      gc.beginPath();
+      gc.rect(R_px + 2 * R_u, R_py - 5 * R_u, 6 * R_u, 10.45 * R_u);
+      gc.clip();
+    }
+    R(4.1, -0.9 + dy, 1.8, 6.3, '#efefef');
+    R(4.1, -0.9 + dy, 1.8, 1.8, o);
+    R(4.1, 1 + dy, 1.8, 0.5, '#333');
+    R(3.4, 4.2 + dy, 0.8, 1.4, '#c9c9c9');
+    R(5.8, 4.2 + dy, 0.8, 1.4, '#c9c9c9');
+    if (dy > 0) gc.restore();
+  }
+  R(3 - sh, 5.45, 2, 0.35, '#3b4150');
+  R(5 + sh, 5.45, 2, 0.35, '#3b4150');
+  if (age < 1100) {
+    const p = age / 1100;
+    const h = (nk ? 9 : 7) * (1 - p * 0.6) * (0.85 + 0.3 * Math.abs(Math.sin(t / 37)));
+    const w = (nk ? 2.4 : 1.6) * (1 - p * 0.5);
+    R(5 - w / 2, 5.45 - h, w, h, '#ff6a1a');
+    R(5 - w * 0.32, 5.45 - h * 0.75, w * 0.64, h * 0.75, '#ffd23f');
+    R(5 - w * 0.15, 5.45 - h * 0.5, w * 0.3, h * 0.5, '#fff6d0');
+    glowAdd(5, 5.2, nk ? 5.5 : 4.2, '255,150,60', 0.5 * (1 - p));
+  }
+  if (age < 3300) {
+    const dur = nk ? 2700 : 1900;
+    const nn = LOD >= 1 ? 8 : 4;
+    for (let k = 0; k < nn; k++) {
+      const q = (age - 80 - k * 170 * (8 / nn)) / dur;
+      if (q <= 0 || q >= 1) continue;
+      gc.globalAlpha = 0.6 * (1 - q);
+      gc.fillStyle = q < 0.3 ? '#e9e4dc' : '#a9a9b2';
+      RP(5 + Math.sin(k * 2.3) * 1.2 * q + (k % 2 ? 1 : -1) * q * 1.4, 5.2 - q * (nk ? 9 : 7), (nk ? 1 : 0.8) + q * (nk ? 3 : 2.4));
+    }
+    gc.globalAlpha = 1;
+  }
+  const alarm = nk && age < 2400;
+  const bk = ((t / (alarm ? 110 : 520) + ph) | 0) % 2;
+  const lc = alarm ? '#ff3030' : '#ffb02e';
+  R(2.55, 5.05, 0.5, 0.3, bk ? lc : '#3a2a10');
+  R(6.95, 5.05, 0.5, 0.3, bk ? '#3a2a10' : lc);
+  if (alarm && bk) glowAdd(5, 5, 6, '255,40,30', 0.16);
+  if (LOD >= 1) {
+    const vp = ((t + ph * 93) % 4600) / 4600;
+    if (vp < 0.4) {
+      gc.globalAlpha = 0.55 * (1 - vp / 0.4);
+      gc.fillStyle = '#f2f4f8';
+      RP(2.9 + vp * 1.2, 5.1 - vp * 6, 0.4 + vp * 2.2);
+      RP(7.1 - vp * 1.2, 5.1 - vp * 6, 0.4 + vp * 2.2);
+      gc.globalAlpha = 1;
+    }
+  }
+}
+
+function drawAirfield(b: Building, t: number, o: string, ph: number): void {
+  const age = b.lt ? t - b.lt : 1e9;
+  const night = NIGHTK > 0.25;
+  R(0, 6, 10, 3.6, '#53575f');
+  R(0, 6, 10, 0.25, '#6b707a');
+  R(0, 9.35, 10, 0.25, '#3f434a');
+  for (let i = 0; i < 5; i++) R(0.5 + i * 2, 7.62, 1.1, 0.32, '#f2f2f2');
+  for (let i = 0; i < 4; i++) {
+    R(0.1, 6.7 + i * 0.55, 0.22, 0.28, '#e8e8e8');
+    R(9.68, 6.7 + i * 0.55, 0.22, 0.28, '#e8e8e8');
+  }
+  const nl = LOD >= 1 ? 9 : 3;
+  for (let i = 0; i < nl; i++) {
+    const kx = 0.3 + i * (10.3 / nl);
+    const on = (((t / 110) | 0) + i) % nl === 0;
+    const c = on ? '#fff6b0' : '#8a8570';
+    R(kx, 6.1, 0.3, 0.22, c);
+    R(kx, 9, 0.3, 0.22, c);
+    if (on && night) {
+      glowAdd(kx + 0.15, 6.2, 0.9, '255,240,160', 0.4);
+      glowAdd(kx + 0.15, 9.1, 0.9, '255,240,160', 0.4);
+    }
+  }
+  R(0.4, 2.6, 2.4, 3.4, '#9aa2ae');
+  R(0.4, 2.2, 2.4, 0.8, o);
+  const wc = night ? '#ffd978' : '#ffe27a';
+  R(0.8, 3.4, 0.6, 0.6, wc);
+  R(1.8, 3.4, 0.6, 0.6, wc);
+  R(0.8, 4.5, 0.6, 0.6, night ? '#ffd978' : '#8aa2c8');
+  R(1.8, 4.5, 0.6, 0.6, night ? '#ffd978' : '#8aa2c8');
+  R(1.5, 1.3, 0.25, 1, '#444');
+  const cs = Math.cos(t / 650 + ph);
+  const bw = Math.max(0.25, 1.0 * Math.abs(cs));
+  R(1.62 - bw, 1.1, 2 * bw, 0.22, '#d4d8e2');
+  R(1.62 + bw * Math.sign(cs || 1) - 0.12, 1, 0.24, 0.42, '#e04646');
+  const g = (t + ph * 50) % 1800 < 260;
+  R(0.5, 1.9, 0.4, 0.4, g ? '#46ff7a' : '#1b3a24');
+  if (g) glowAdd(0.7, 2.1, 1.2, '80,255,130', 0.4);
+  R(9.5, 3.2, 0.22, 3, '#d9d9d9');
+  const ns = LOD >= 1 ? 4 : 2;
+  for (let i = 0; i < ns; i++) {
+    const sx = 9.5 - (i + 1) * ((0.48 * 4) / ns);
+    const sy = 3.2 + Math.sin(t / 260 - i * 0.9) * 0.2 * (i + 1) * 0.5;
+    R(sx, sy, (0.5 * 4) / ns, 0.45 - i * 0.07 * (4 / ns), i % 2 ? '#ffffff' : '#ff6a1a');
+  }
+  let show = 1;
+  let ga = 1;
+  if (age < 1e9) {
+    if (age < 2400) show = 0;
+    else if (age < 3400) ga = (age - 2400) / 1000;
+  }
+  if (show) {
+    if (ga < 1) gc.globalAlpha = ga;
+    R(5.4, 4.9, 3.6, 0.9, '#eceff4');
+    R(6.6, 3.7, 0.9, 2.9, '#d6dae2');
+    R(8.3, 4.3, 0.7, 0.8, o);
+    R(5.4, 5.2, 0.9, 0.3, '#444');
+    R(5.4, 4.9, 0.25, 0.9, '#c9ced9');
+    if ((t + ph * 31) % 1300 < 120) R(6.9, 3.6, 0.35, 0.35, '#ff3030');
+    if (ga < 1) gc.globalAlpha = 1;
   }
 }
 
@@ -855,6 +1222,7 @@ function drawB(b: Building, t: number): void {
     }
     return;
   }
+  LOD = z >= 14 ? 2 : z >= 8 ? 1 : 0;
   if (b.born) {
     const age = t - b.born;
     if (age >= 0 && age < 460) {
@@ -871,26 +1239,9 @@ function drawB(b: Building, t: number): void {
     gc.fillStyle = 'rgba(0,0,0,.28)';
     gc.fillRect(R_px + z * 0.12, R_py + z * 0.78, z * 0.95, z * 0.2);
   }
-  if (b.t === 'city') {
-    R(0, 8, 10, 1.6, '#8d917f');
-    R(0.8, 4.6, 3.2, 4, '#e8e2d0');
-    R(0.8, 4, 3.2, 1, o);
-    R(0.8, 4, 3.2, 0.35, 'rgba(255,255,255,.5)');
-    R(4.8, 2.4, 3.6, 6.2, '#c6cad6');
-    R(4.8, 1.8, 3.6, 1, o);
-    R(8.4, 2.4, 0.6, 6.2, '#9ea3b4');
-    for (let i = 0; i < 3; i++) {
-      for (let j = 0; j < 2; j++) {
-        const on = hash(b.x + i, b.y + j, (t / 900) | 0) < 0.8;
-        R(5.3 + j * 1.6, 3.3 + i * 1.7, 0.9, 0.9, on ? '#ffe27a' : '#59607a');
-      }
-    }
-    R(1.4, 5.6, 0.8, 0.8, '#ffe27a');
-    R(2.6, 5.6, 0.8, 0.8, '#8aa2c8');
-    R(9, 5, 0.4, 3.6, '#555');
-    R(8.7, 4.6, 1, 0.5, '#d00');
-    if (b.cap) drawFlag(5.8, -2.6, o, t, true);
-  } else if (b.t === 'power') {
+  const ph = (b.x * 7 + b.y * 13) % 97;
+  if (b.t === 'city') drawCity(b, t, o, ph);
+  else if (b.t === 'power') {
     R(0, 8, 10, 1.6, '#8d917f');
     R(0.5, 5, 9, 3.2, '#a9afc0');
     R(0.5, 4.6, 9, 0.7, '#d4d8e4');
@@ -900,18 +1251,16 @@ function drawB(b: Building, t: number): void {
     R(6.3, 1.6, 2, 0.5, '#b0b5c4');
     R(4.3, 5.8, 1.4, 2, '#ffd23f');
     R(4.8, 5.4, 0.5, 0.6, '#fff');
-    for (let k = 0; k < 3; k++) {
-      const ph = (t / 700 + k * 0.33) % 1;
-      gc.globalAlpha = 0.55 * (1 - ph);
+    const nn = LOD >= 1 ? 3 : 1;
+    for (let k = 0; k < nn; k++) {
+      const ph2 = (t / 700 + k / nn) % 1;
+      gc.globalAlpha = 0.55 * (1 - ph2);
       gc.fillStyle = '#e8e8ee';
-      const cx = R_px + (2.5 + k * 0.4) * R_u;
-      const cy = R_py + (0.8 - ph * 4) * R_u;
-      gc.beginPath();
-      gc.arc(cx, cy, R_u * (0.8 + ph * 1.3), 0, Math.PI * 2);
-      gc.fill();
+      RP(2.5 + k * 0.4, 0.8 - ph2 * 4, 0.8 + ph2 * 1.3);
     }
     gc.globalAlpha = 1;
     R(0.5, 8.2, 9, 0.4, o);
+    if (LOD >= 1 && ((t / 90) | 0) % 9 < 2) R(4.6 + hash((t / 90) | 0, b.x, 3) * 1.4, 5.2, 0.3, 0.3, '#9fe7ff');
   } else if (b.t === 'barracks') {
     R(0, 8, 10, 1.6, '#7b8a5a');
     R(0.8, 4.2, 8.4, 4.6, '#7a6a46');
@@ -927,26 +1276,14 @@ function drawB(b: Building, t: number): void {
     R(1.6, 7, 6.8, 2, '#4e5868');
     R(2, 7, 6, 0.5, '#6d7889');
     R(4.2, 3.4, 1.6, 3.8, '#9aa5b5');
-    gc.save();
-    gc.translate(R_px + 5 * R_u, R_py + 3 * R_u);
-    gc.rotate(t / 500 + (b.x + b.y));
-    gc.fillStyle = '#cfd8e3';
-    gc.fillRect(-2.6 * R_u, -0.35 * R_u, 5.2 * R_u, 0.7 * R_u);
-    gc.fillStyle = o;
-    gc.fillRect(1.8 * R_u, -0.5 * R_u, 1 * R_u, 1 * R_u);
-    gc.restore();
+    const cs = Math.cos(t / 500 + (b.x + b.y));
+    const bw = Math.max(0.3, 2.6 * Math.abs(cs));
+    R(5 - bw, 2.65, 2 * bw, 0.7, '#cfd8e3');
+    R(5 + bw * Math.sign(cs || 1) - 0.5, 2.5, 1, 1, o);
     R(3.6, 2.6, 2.8, 0.8, o);
+    if (LOD >= 1 && (t + b.x * 91) % 1700 < 180) R(2.2, 7.3, 0.5, 0.4, '#46ff7a');
   } else if (b.t === 'silo') {
-    R(0, 7, 10, 2.6, '#4a4f5c');
-    R(0.4, 7, 9.2, 0.5, '#6a7080');
-    R(2.4, 5.2, 5.2, 2.2, '#2c303a');
-    R(3.2, 5.6, 1.6, 1.2, '#f6c744');
-    R(5.2, 5.6, 1.6, 1.2, '#f6c744');
-    R(4.3, -0.6, 1.4, 6, '#efefef');
-    R(4.3, -0.6, 1.4, 1.6, o);
-    R(4.3, 1, 1.4, 0.5, '#333');
-    R(3.6, 4.2, 0.8, 1.4, '#c9c9c9');
-    R(5.6, 4.2, 0.8, 1.4, '#c9c9c9');
+    drawSilo(b, t, o, ph);
   } else if (b.t === 'dfac') {
     R(0, 8, 10, 1.6, '#76808c');
     R(0.4, 4.6, 9.2, 4, '#5f6e7d');
@@ -958,6 +1295,11 @@ function drawB(b: Building, t: number): void {
     R(4.4, 1.8, 1.2, 0.5, o);
     R(1.2, 5.6, 2.8, 3, '#2a323c');
     R(6, 5.6, 2.8, 3, '#2a323c');
+    if (LOD >= 1) {
+      const rb = (((t / 400) | 0) + b.x) % 2;
+      R(2.6, 5.2, 0.5, 0.3, rb ? '#46ff7a' : '#1b3a24');
+      R(7, 5.2, 0.5, 0.3, rb ? '#1b3a24' : '#46ff7a');
+    }
   } else if (b.t === 'factory') {
     R(0, 8, 10, 1.6, '#87857a');
     R(0.5, 3.8, 9, 4.8, '#7d7466');
@@ -966,13 +1308,12 @@ function drawB(b: Building, t: number): void {
     R(1.2, 0, 1.4, 3.2, '#5a5348');
     R(1.2, 0, 1.4, 0.5, '#8a8274');
     R(3.4, 1, 1.2, 2.2, '#5a5348');
-    for (let k = 0; k < 2; k++) {
-      const ph = (t / 800 + k * 0.5) % 1;
-      gc.globalAlpha = 0.5 * (1 - ph);
+    const nn = LOD >= 1 ? 2 : 1;
+    for (let k = 0; k < nn; k++) {
+      const ph2 = (t / 800 + k / nn) % 1;
+      gc.globalAlpha = 0.5 * (1 - ph2);
       gc.fillStyle = '#bdbdc4';
-      gc.beginPath();
-      gc.arc(R_px + 1.9 * R_u, R_py + (-0.2 - ph * 3.5) * R_u, R_u * (0.6 + ph), 0, Math.PI * 2);
-      gc.fill();
+      RP(1.9, -0.2 - ph2 * 3.5, 0.6 + ph2);
     }
     gc.globalAlpha = 1;
     R(5.4, 4.8, 3.4, 3.6, '#2c2a26');
@@ -981,19 +1322,14 @@ function drawB(b: Building, t: number): void {
     R(7.2, 5.9, 1.6, 0.4, '#33401f');
     R(1.2, 5.2, 3, 1, '#d8cba8');
     R(1.2, 6.6, 3, 1, '#d8cba8');
+    if (LOD >= 1 && ((t / 120) | 0) % 5 < 2) {
+      R(5.6 + hash((t / 120) | 0, b.y, 5) * 2.4, 7.6, 0.35, 0.35, '#fff2a0');
+      R(6 + hash((t / 120) | 0, b.x, 6) * 2, 7.9, 0.25, 0.25, '#ffb02e');
+    }
   } else if (b.t === 'airfield') {
-    R(0, 6, 10, 3.6, '#53575f');
-    R(0, 7.7, 10, 0.35, '#d9d9d9');
-    for (let i = 0; i < 5; i++) R(0.5 + i * 2, 7.62, 1, 0.5, '#ffffff');
-    R(0.4, 2.6, 2.4, 3.4, '#9aa2ae');
-    R(0.4, 2.2, 2.4, 0.8, o);
-    R(0.8, 3.4, 0.6, 0.6, '#ffe27a');
-    R(1.8, 3.4, 0.6, 0.6, '#ffe27a');
-    R(5.4, 4.9, 3.6, 0.9, '#eceff4');
-    R(6.6, 3.7, 0.9, 2.9, '#d6dae2');
-    R(8.3, 4.3, 0.7, 0.8, o);
-    R(5.4, 5.2, 0.9, 0.3, '#444');
+    drawAirfield(b, t, o, ph);
   }
+  if (b.hp < b.max) drawDamage(b, t);
   if (b.hp < b.max) {
     R(1, -2, 8, 0.9, '#000');
     R(1, -2, 8 * Math.max(0, b.hp / b.max), 0.9, b.hp / b.max > 0.5 ? '#5be08a' : '#ff6b6b');
@@ -1011,7 +1347,468 @@ export function drawMissile(c: CanvasRenderingContext2D, o: number, px: number, 
   c.fillRect(px - z * 0.12, py - hh + z * 0.4, z * 0.24, z * 0.5);
 }
 
-export function drawUnit(c: CanvasRenderingContext2D, u: Pick<Unit, 'k' | 'o' | 'x' | 'y' | 'hp' | 'max' | 'a' | 'ta' | 'id'>, t: number, ox: number, oy: number): void {
+function drawRubble(r: Rubble, t: number): void {
+  const z = G.cam.z;
+  const age = (t - r.t0) / 1000;
+  if (age > 45 || age < 0) return;
+  if (G.BLD[r.y * G.W + r.x] >= 0) return;
+  const px = R_ox + r.x * z;
+  const py = R_oy + r.y * z;
+  if (z < 5) {
+    gc.globalAlpha = Math.max(0, 1 - age / 45);
+    gc.fillStyle = '#2a2623';
+    gc.fillRect(px, py, Math.max(z, 3), Math.max(z, 3));
+    gc.globalAlpha = 1;
+    return;
+  }
+  LOD = z >= 14 ? 2 : z >= 8 ? 1 : 0;
+  R_u = z / 10;
+  R_px = px;
+  R_py = py;
+  gc.globalAlpha = Math.min(1, (45 - age) / 10);
+  R(0.6, 6.6, 8.8, 2.6, '#3a3430');
+  const cols = ['#5a534b', '#7a7268', '#2e2a27', '#8a8174'];
+  for (let i = 0; i < 9; i++) {
+    const hx = hash(r.x + i, r.y, 21);
+    const hy = hash(r.x, r.y + i, 22);
+    R(0.6 + hx * 7.6, 5.6 + hy * 3.4, 0.8 + hx * 1.2, 0.6 + hy * 0.9, cols[i % 4]);
+  }
+  gc.globalAlpha = 1;
+  if (age < 14) {
+    const fi = 1 - age / 14;
+    const nf = LOD >= 1 ? 3 : 1;
+    for (let i = 0; i < nf; i++) {
+      const fx = 1.5 + hash(r.x + i, r.y, 23) * 6.5;
+      const fl = (t / 100 + i * 3) | 0;
+      const hg = (0.5 + hash(fl, i, r.x) * 1.4) * fi;
+      R(fx, 6.8 - hg, 0.8, hg, '#ff7a1a');
+      R(fx + 0.2, 6.8 - hg * 0.6, 0.4, hg * 0.6, '#ffd23f');
+    }
+    smokeUp(5, 6.4, t, 2600, 3, 5, 0.6, 1.9, '#2b2b2b', 0.55 * fi, ((r.x * 3 + r.y) % 7) / 7);
+  }
+}
+
+function drawWreck(w: Wreck, t: number): void {
+  const z = G.cam.z;
+  const age = (t - w.t0) / 1000;
+  if (age > 26 || age < 0 || z < 5) return;
+  const px = R_ox + w.x * z;
+  const py = R_oy + w.y * z;
+  const fade = age > 20 ? Math.max(0, 1 - (age - 20) / 6) : 1;
+  gc.save();
+  gc.globalAlpha = fade;
+  gc.translate(px, py);
+  gc.rotate(w.a);
+  const hw = w.k === 'howitzer';
+  const L = hw ? 1.04 : 0.88;
+  const Wd = hw ? 0.52 : 0.44;
+  gc.fillStyle = '#1b1d1e';
+  gc.fillRect(-0.5 * z, -0.38 * z, z, 0.2 * z);
+  gc.fillRect(-0.5 * z, 0.18 * z, z, 0.2 * z);
+  gc.fillStyle = '#2a2c27';
+  gc.fillRect((-L / 2) * z, (-Wd / 2) * z, L * z, Wd * z);
+  gc.fillStyle = '#161815';
+  gc.fillRect(-0.1 * z, -0.15 * z, 0.3 * z, 0.3 * z);
+  gc.save();
+  gc.translate(0.34 * z, 0.26 * z);
+  gc.rotate(0.7);
+  gc.fillStyle = '#34382e';
+  gc.fillRect(-0.18 * z, -0.17 * z, 0.36 * z, 0.34 * z);
+  gc.fillStyle = '#22251c';
+  gc.fillRect(0.1 * z, -0.05 * z, hw ? 0.7 * z : 0.45 * z, 0.1 * z);
+  gc.restore();
+  gc.restore();
+  if (age < 18) {
+    const fi = 1 - age / 18;
+    const nf = z >= 8 ? 3 : 1;
+    for (let i = 0; i < nf; i++) {
+      const fx = px + (hash(i, w.o, 31) - 0.5) * 0.7 * z;
+      const fl = (t / 110 + i * 2) | 0;
+      const hg = (0.25 + hash(fl, i, 32) * 0.5) * z * fi;
+      gc.fillStyle = '#ff7a1a';
+      gc.fillRect(fx - 0.1 * z, py - hg, 0.2 * z, hg);
+      gc.fillStyle = '#ffd23f';
+      gc.fillRect(fx - 0.05 * z, py - hg * 0.6, 0.1 * z, hg * 0.6);
+    }
+    const ns = z >= 8 ? 4 : 2;
+    for (let k = 0; k < ns; k++) {
+      const ph = (t / 3000 + k / ns + (w.t0 % 7) / 7) % 1;
+      gc.globalAlpha = 0.6 * fi * (1 - ph) * Math.min(1, ph * 5);
+      gc.fillStyle = '#252525';
+      gc.beginPath();
+      gc.arc(px + Math.sin(ph * 4 + k * 1.7) * z * 0.3 * ph, py - z * 0.15 - ph * z * 3.2, z * (0.2 + 0.6 * ph), 0, Math.PI * 2);
+      gc.fill();
+    }
+    gc.globalAlpha = 1;
+  }
+}
+
+type DrawableUnit = Pick<
+  Unit,
+  'k' | 'o' | 'x' | 'y' | 'hp' | 'max' | 'a' | 'ta' | 'id' | 'alt' | 'fireAt' | 'ph' | 'mvS' | 'rta' | '_lx' | '_ly' | '_rt'
+>;
+
+function angN(d: number): number {
+  while (d > Math.PI) d -= 6.283185;
+  while (d < -Math.PI) d += 6.283185;
+  return d;
+}
+
+function unitMotion(u: DrawableUnit, t: number): number {
+  const dtf = u._rt === undefined ? 0 : Math.min(0.06, Math.max(0, (t - u._rt) / 1000));
+  let mv = 0;
+  if (u._lx !== undefined && u._ly !== undefined) {
+    mv = Math.hypot(u.x - u._lx, u.y - u._ly);
+    if (mv > 3) mv = 0;
+  }
+  u._lx = u.x;
+  u._ly = u.y;
+  u._rt = t;
+  u.ph = (u.ph || 0) + mv;
+  u.mvS = (u.mvS || 0) * 0.85 + (mv > 0.0004 ? 0.15 : 0);
+  const goal = u.ta === undefined ? u.a || 0 : u.ta;
+  if (u.rta === undefined) u.rta = goal;
+  else {
+    const sp = (u.k === 'howitzer' ? 3.2 : u.k === 'tank' ? 6.5 : 12) * dtf;
+    const d = angN(goal - u.rta);
+    u.rta += Math.abs(d) < sp ? d : d > 0 ? sp : -sp;
+  }
+  return mv;
+}
+
+function recoilK(u: DrawableUnit, t: number, hw: boolean): number {
+  const fa = t - (u.fireAt === undefined ? -1e9 : u.fireAt);
+  if (fa < 0 || fa > 900) return 0;
+  const d = hw ? 700 : 260;
+  return fa < 50 ? fa / 50 : Math.max(0, 1 - (fa - 50) / (d - 50));
+}
+
+function planeSil(c: CanvasRenderingContext2D): void {
+  c.beginPath();
+  c.moveTo(0.6, 0);
+  c.lineTo(0.4, -0.07);
+  c.lineTo(0.1, -0.08);
+  c.lineTo(-0.22, -0.58);
+  c.lineTo(-0.36, -0.58);
+  c.lineTo(-0.28, -0.08);
+  c.lineTo(-0.5, -0.08);
+  c.lineTo(-0.6, -0.26);
+  c.lineTo(-0.66, -0.26);
+  c.lineTo(-0.62, -0.04);
+  c.lineTo(-0.62, 0.04);
+  c.lineTo(-0.66, 0.26);
+  c.lineTo(-0.6, 0.26);
+  c.lineTo(-0.5, 0.08);
+  c.lineTo(-0.28, 0.08);
+  c.lineTo(-0.36, 0.58);
+  c.lineTo(-0.22, 0.58);
+  c.lineTo(0.1, 0.08);
+  c.lineTo(0.4, 0.07);
+  c.closePath();
+  c.fill();
+}
+
+function drawPlane(u: DrawableUnit, t: number, px: number, py: number, z: number, o: string): void {
+  const al = u.alt === undefined ? 1 : u.alt;
+  const a = u.a || 0;
+  const sc = 0.36 + 0.64 * al;
+  if (PF.set.shadow) {
+    const ss = 0.36 + 0.2 * al;
+    const so = al * z * 0.55;
+    gc.save();
+    gc.translate(px + so * 0.6, py + so * 0.95);
+    gc.rotate(a);
+    gc.scale(z * ss, z * ss);
+    gc.globalAlpha = 0.3 * (1 - 0.3 * al);
+    gc.fillStyle = '#000';
+    planeSil(gc);
+    gc.restore();
+  }
+  gc.save();
+  gc.translate(px, py);
+  gc.rotate(a);
+  gc.scale(z * sc, z * sc);
+  gc.fillStyle = '#dfe3ec';
+  planeSil(gc);
+  gc.fillStyle = '#aab3c4';
+  gc.beginPath();
+  gc.moveTo(0.1, -0.08);
+  gc.lineTo(-0.22, -0.58);
+  gc.lineTo(-0.36, -0.58);
+  gc.lineTo(-0.28, -0.08);
+  gc.closePath();
+  gc.fill();
+  gc.beginPath();
+  gc.moveTo(0.1, 0.08);
+  gc.lineTo(-0.22, 0.58);
+  gc.lineTo(-0.36, 0.58);
+  gc.lineTo(-0.28, 0.08);
+  gc.closePath();
+  gc.fill();
+  gc.fillStyle = o;
+  gc.fillRect(-0.33, -0.58, 0.12, 0.1);
+  gc.fillRect(-0.33, 0.48, 0.12, 0.1);
+  gc.fillRect(-0.6, -0.03, 0.28, 0.06);
+  gc.fillStyle = '#2e3f63';
+  gc.fillRect(0.18, -0.045, 0.17, 0.09);
+  gc.fillStyle = '#4a5060';
+  gc.fillRect(-0.16, -0.2, 0.26, 0.07);
+  gc.fillRect(-0.16, 0.13, 0.26, 0.07);
+  if (al > 0.08) {
+    const fl = 0.6 + 0.4 * Math.abs(Math.sin(t / 45 + u.id));
+    gc.fillStyle = '#ff9a2e';
+    gc.fillRect(-0.16 - 0.16 * fl, -0.185, 0.16 * fl, 0.04);
+    gc.fillRect(-0.16 - 0.16 * fl, 0.145, 0.16 * fl, 0.04);
+    gc.fillStyle = '#fff1b0';
+    gc.fillRect(-0.16 - 0.08 * fl, -0.18, 0.08 * fl, 0.03);
+    gc.fillRect(-0.16 - 0.08 * fl, 0.15, 0.08 * fl, 0.03);
+  }
+  gc.fillStyle = '#ff3030';
+  gc.fillRect(-0.33, -0.6, 0.07, 0.07);
+  gc.fillStyle = '#38ff6a';
+  gc.fillRect(-0.33, 0.53, 0.07, 0.07);
+  if ((t / 700 + u.id * 0.37) % 1 < 0.14) {
+    gc.fillStyle = '#fff';
+    gc.fillRect(-0.68, -0.04, 0.08, 0.08);
+  }
+  gc.restore();
+}
+
+function drawArmor(u: DrawableUnit, t: number, px: number, py: number, z: number, o: string, hw: boolean): void {
+  unitMotion(u, t);
+  const a = u.a || 0;
+  const moving = (u.mvS || 0) > 0.3;
+  const ca = Math.cos(a);
+  const sa = Math.sin(a);
+  const rc = recoilK(u, t, hw);
+  const fa = t - (u.fireAt === undefined ? -1e9 : u.fireAt);
+  if (moving && z >= 7) {
+    for (let i = 0; i < 4; i++) {
+      const q = (t / 560 + i / 4 + u.id * 0.37) % 1;
+      const sd = (i % 2 ? 1 : -1) * q * z * 0.35;
+      gc.globalAlpha = 0.3 * (1 - q);
+      gc.fillStyle = '#bba98a';
+      gc.beginPath();
+      gc.arc(px - ca * z * (0.5 + q * 0.9) - sa * sd, py - sa * z * (0.5 + q * 0.9) + ca * sd, z * (0.1 + 0.26 * q), 0, Math.PI * 2);
+      gc.fill();
+    }
+    if (z >= 10) {
+      for (let i = 0; i < 2; i++) {
+        const q = (t / 380 + i * 0.5 + u.id * 0.21) % 1;
+        gc.globalAlpha = 0.4 * (1 - q);
+        gc.fillStyle = '#3a3a3e';
+        gc.beginPath();
+        gc.arc(
+          px - ca * z * (0.5 + q * 0.45) - sa * z * 0.1,
+          py - sa * z * (0.5 + q * 0.45) + ca * z * 0.1 - q * z * 0.15,
+          z * (0.05 + 0.12 * q),
+          0,
+          Math.PI * 2,
+        );
+        gc.fill();
+      }
+    }
+    gc.globalAlpha = 1;
+  }
+  if (PF.set.shadow) {
+    gc.fillStyle = 'rgba(0,0,0,.28)';
+    gc.fillRect(px - z * 0.5, py - z * 0.15, z, z * 0.6);
+  }
+  gc.save();
+  gc.translate(px, py);
+  gc.rotate(a);
+  gc.scale(z, z);
+  if (hw && fa >= 0 && fa < 140) gc.translate(-0.035 * (1 - fa / 140), 0);
+  gc.fillStyle = '#202325';
+  gc.fillRect(-0.5, -0.4, 1, 0.2);
+  gc.fillRect(-0.5, 0.2, 1, 0.2);
+  gc.fillStyle = '#454b4f';
+  const off = (u.ph || 0) % 0.1;
+  for (let i = 0; i < 10; i++) {
+    const x = -0.5 + i * 0.1 + off;
+    if (x > 0.46) continue;
+    gc.fillRect(x, -0.4, 0.04, 0.2);
+    gc.fillRect(x, 0.2, 0.04, 0.2);
+  }
+  gc.fillStyle = '#15171a';
+  gc.fillRect(-0.5, -0.4, 1, 0.03);
+  gc.fillRect(-0.5, 0.37, 1, 0.03);
+  gc.fillStyle = hw ? '#6e6c4f' : '#55603c';
+  gc.beginPath();
+  gc.moveTo(-0.47, -0.23);
+  gc.lineTo(0.36, -0.23);
+  gc.lineTo(0.5, -0.13);
+  gc.lineTo(0.5, 0.13);
+  gc.lineTo(0.36, 0.23);
+  gc.lineTo(-0.47, 0.23);
+  gc.closePath();
+  gc.fill();
+  gc.fillStyle = hw ? '#807e5d' : '#66724a';
+  gc.fillRect(-0.47, -0.23, 0.83, 0.05);
+  gc.fillStyle = hw ? '#5a5841' : '#434b32';
+  gc.fillRect(-0.46, -0.14, 0.2, 0.28);
+  if (z >= 14) {
+    gc.fillStyle = 'rgba(0,0,0,.35)';
+    for (let i = 0; i < 3; i++) {
+      gc.fillRect(-0.43 + i * 0.05, -0.13, 0.015, 0.09);
+      gc.fillRect(-0.43 + i * 0.05, 0.04, 0.015, 0.09);
+    }
+  }
+  gc.fillStyle = o;
+  gc.fillRect(-0.45, -0.04, 0.18, 0.08);
+  if (hw && !moving) {
+    gc.fillStyle = '#3d3c2b';
+    gc.fillRect(-0.6, -0.16, 0.11, 0.32);
+    gc.fillStyle = '#55543e';
+    gc.fillRect(-0.6, -0.16, 0.11, 0.04);
+  }
+  gc.save();
+  gc.translate(hw ? -0.12 : -0.04, 0);
+  gc.rotate(angN((u.rta === undefined ? a : u.rta) - a));
+  const sh = -rc * (hw ? 0.3 : 0.12);
+  if (hw) {
+    gc.fillStyle = '#2f3022';
+    gc.fillRect(0.1 + sh, -0.05, 0.85, 0.1);
+    gc.fillStyle = '#40412f';
+    gc.fillRect(0.1 + sh, -0.05, 0.85, 0.03);
+    gc.fillStyle = '#262719';
+    gc.fillRect(0.42 + sh, -0.075, 0.12, 0.15);
+    gc.fillStyle = '#1c1d12';
+    gc.fillRect(0.86 + sh, -0.08, 0.14, 0.16);
+  } else {
+    gc.fillStyle = '#2e3320';
+    gc.fillRect(0.1 + sh, -0.045, 0.5, 0.09);
+    gc.fillStyle = '#3e4430';
+    gc.fillRect(0.1 + sh, -0.045, 0.5, 0.025);
+    gc.fillStyle = '#242819';
+    gc.fillRect(0.54 + sh, -0.06, 0.08, 0.12);
+  }
+  gc.fillStyle = hw ? '#7d7b5a' : '#6b7849';
+  gc.beginPath();
+  if (hw) {
+    gc.moveTo(-0.3, -0.2);
+    gc.lineTo(0.12, -0.2);
+    gc.lineTo(0.22, -0.12);
+    gc.lineTo(0.22, 0.12);
+    gc.lineTo(0.12, 0.2);
+    gc.lineTo(-0.3, 0.2);
+    gc.closePath();
+  } else {
+    gc.moveTo(-0.2, -0.15);
+    gc.lineTo(0.1, -0.16);
+    gc.lineTo(0.22, -0.09);
+    gc.lineTo(0.22, 0.09);
+    gc.lineTo(0.1, 0.16);
+    gc.lineTo(-0.2, 0.15);
+    gc.lineTo(-0.26, 0.08);
+    gc.lineTo(-0.26, -0.08);
+    gc.closePath();
+  }
+  gc.fill();
+  gc.fillStyle = hw ? '#8f8d69' : '#7d8b58';
+  gc.fillRect(hw ? -0.3 : -0.2, hw ? -0.2 : -0.15, hw ? 0.42 : 0.3, 0.04);
+  gc.fillStyle = hw ? '#4a4936' : '#3d4630';
+  gc.beginPath();
+  gc.arc(-0.1, -0.07, 0.05, 0, Math.PI * 2);
+  gc.fill();
+  gc.fillStyle = o;
+  gc.fillRect(hw ? -0.2 : -0.14, 0.01, 0.1, 0.08);
+  if (fa >= 0 && fa < (hw ? 120 : 90)) {
+    const k = 1 - fa / (hw ? 120 : 90);
+    const tip = (hw ? 1.0 : 0.62) + sh;
+    const ln = (hw ? 0.45 : 0.3) * k + 0.08;
+    gc.fillStyle = `rgba(255,170,50,${0.5 * k})`;
+    gc.beginPath();
+    gc.arc(tip + 0.08, 0, (hw ? 0.3 : 0.2) * (0.5 + k), 0, Math.PI * 2);
+    gc.fill();
+    gc.fillStyle = `rgba(255,240,170,${0.95 * k})`;
+    gc.beginPath();
+    gc.moveTo(tip, 0);
+    gc.lineTo(tip + ln, -0.1);
+    gc.lineTo(tip + 0.1, 0);
+    gc.lineTo(tip + ln, 0.1);
+    gc.closePath();
+    gc.fill();
+  }
+  gc.restore();
+  gc.restore();
+  if (u.hp < u.max * 0.4 && z >= 7) {
+    for (let i = 0; i < 2; i++) {
+      const q = (t / 1500 + i * 0.5 + u.id * 0.3) % 1;
+      gc.globalAlpha = 0.55 * (1 - q);
+      gc.fillStyle = '#242424';
+      gc.beginPath();
+      gc.arc(px + Math.sin(q * 5 + i) * z * 0.1, py - z * 0.1 - q * z * 1.2, z * (0.1 + 0.22 * q), 0, Math.PI * 2);
+      gc.fill();
+    }
+    gc.globalAlpha = 1;
+    if (u.hp < u.max * 0.2) {
+      const fl = (t / 90 + u.id) | 0;
+      const hg = z * (0.15 + 0.2 * hash(fl, u.id, 41));
+      gc.fillStyle = '#ff7a1a';
+      gc.fillRect(px - z * 0.08, py - hg, z * 0.16, hg);
+      gc.fillStyle = '#ffd23f';
+      gc.fillRect(px - z * 0.04, py - hg * 0.6, z * 0.08, hg * 0.6);
+    }
+  }
+}
+
+function drawSoldier(u: DrawableUnit, t: number, px: number, py: number, z: number, o: string): void {
+  unitMotion(u, t);
+  const moving = (u.mvS || 0) > 0.3;
+  const st = moving ? Math.sin((u.ph || 0) * 26) * z * 0.055 : 0;
+  const bob = moving ? 0 : Math.sin(t / 420 + u.id) * z * 0.01;
+  const aim = u.rta === undefined ? u.a || 0 : u.rta;
+  const fa = t - (u.fireAt === undefined ? -1e9 : u.fireAt);
+  gc.save();
+  gc.translate(px, py);
+  if (PF.set.shadow) {
+    gc.fillStyle = 'rgba(0,0,0,.28)';
+    gc.fillRect(-z * 0.2, z * 0.2, z * 0.45, z * 0.14);
+  }
+  gc.fillStyle = '#2e2e34';
+  gc.fillRect(-z * 0.12, z * 0.05 + st, z * 0.1, z * 0.22);
+  gc.fillRect(z * 0.02, z * 0.05 - st, z * 0.1, z * 0.22);
+  gc.fillStyle = '#1a1a1e';
+  gc.fillRect(-z * 0.13, z * 0.25 + st, z * 0.12, z * 0.05);
+  gc.fillRect(z * 0.01, z * 0.25 - st, z * 0.12, z * 0.05);
+  gc.fillStyle = o;
+  gc.fillRect(-z * 0.17, -z * 0.16 + bob, z * 0.34, z * 0.26);
+  gc.fillStyle = '#e3c9a3';
+  gc.fillRect(-z * 0.1, -z * 0.3 + bob, z * 0.2, z * 0.16);
+  gc.fillStyle = '#3d4a2b';
+  gc.fillRect(-z * 0.12, -z * 0.34 + bob, z * 0.24, z * 0.08);
+  gc.save();
+  gc.translate(0, -z * 0.04 + bob);
+  gc.rotate(aim);
+  gc.fillStyle = '#53585e';
+  gc.fillRect(-z * 0.22, -z * 0.06, z * 0.72, z * 0.1);
+  gc.fillStyle = '#b64a2b';
+  gc.fillRect(z * 0.46, -z * 0.09, z * 0.12, z * 0.15);
+  gc.fillStyle = '#2e3236';
+  gc.fillRect(-z * 0.24, -z * 0.08, z * 0.06, z * 0.14);
+  if (fa >= 0 && fa < 220) {
+    const k = 1 - fa / 220;
+    gc.fillStyle = `rgba(255,190,90,${0.8 * k})`;
+    gc.beginPath();
+    gc.moveTo(-z * 0.24, 0);
+    gc.lineTo(-z * (0.24 + 0.55 * k), -z * 0.12);
+    gc.lineTo(-z * (0.24 + 0.7 * k), 0);
+    gc.lineTo(-z * (0.24 + 0.55 * k), z * 0.12);
+    gc.closePath();
+    gc.fill();
+    if (fa < 90) {
+      gc.fillStyle = `rgba(255,240,170,${0.9 * (1 - fa / 90)})`;
+      gc.beginPath();
+      gc.arc(z * 0.62, 0, z * 0.14, 0, Math.PI * 2);
+      gc.fill();
+    }
+  }
+  gc.restore();
+  gc.restore();
+}
+
+export function drawUnit(c: CanvasRenderingContext2D, u: DrawableUnit, t: number, ox: number, oy: number): void {
   gc = c;
   const z = G.cam.z;
   const px = ox + u.x * z;
@@ -1028,99 +1825,422 @@ export function drawUnit(c: CanvasRenderingContext2D, u: Pick<Unit, 'k' | 'o' | 
       gc.fillRect(px - 1, py - s * 0.7, 2, s * 1.4);
     } else {
       gc.fillRect(px - s * 0.6, py - s * 0.6, s * 1.2, s * 1.2);
-      gc.fillStyle = u.k === 'tank' ? o : '#fff';
+      gc.fillStyle = u.k === 'tank' || u.k === 'howitzer' ? o : '#fff';
       gc.fillRect(px - s * 0.4, py - s * 0.4, s * 0.8, s * 0.8);
       if (u.k === 'rpg') {
         gc.fillStyle = o;
         gc.fillRect(px - s * 0.15, py - s * 0.15, s * 0.3, s * 0.3);
+      } else if (u.k === 'howitzer') {
+        gc.fillStyle = '#fff';
+        gc.fillRect(px - s * 0.12, py - s * 0.12, s * 0.24, s * 0.24);
       }
     }
     return;
   }
-  const a = u.a || 0;
-  if (u.k === 'plane') {
-    if (PF.set.shadow) {
-      gc.save();
-      gc.translate(px + z * 0.5, py + z * 0.8);
-      gc.rotate(a);
-      gc.fillStyle = 'rgba(0,0,0,.3)';
-      gc.fillRect(-z * 0.5, -z * 0.12, z, z * 0.24);
-      gc.fillRect(-z * 0.12, -z * 0.55, z * 0.24, z * 1.1);
-      gc.restore();
-    }
-    gc.save();
-    gc.translate(px, py);
-    gc.rotate(a);
-    gc.fillStyle = '#d9dde6';
-    gc.fillRect(-z * 0.55, -z * 0.12, z * 1.1, z * 0.24);
-    gc.fillStyle = '#aeb5c4';
-    gc.fillRect(-z * 0.12, -z * 0.62, z * 0.3, z * 1.24);
-    gc.fillStyle = o;
-    gc.fillRect(-z * 0.55, -z * 0.3, z * 0.22, z * 0.6);
-    gc.fillRect(z * 0.3, -z * 0.12, z * 0.25, z * 0.24);
-    gc.fillStyle = '#3a4a66';
-    gc.fillRect(z * 0.12, -z * 0.08, z * 0.2, z * 0.16);
-    gc.restore();
-  } else if (u.k === 'tank') {
-    if (PF.set.shadow) {
-      gc.fillStyle = 'rgba(0,0,0,.28)';
-      gc.fillRect(px - z * 0.5, py - z * 0.15, z, z * 0.6);
-    }
-    gc.save();
-    gc.translate(px, py);
-    gc.rotate(a);
-    gc.fillStyle = '#25282a';
-    gc.fillRect(-z * 0.5, -z * 0.38, z, z * 0.2);
-    gc.fillRect(-z * 0.5, z * 0.18, z, z * 0.2);
-    const tr = ((t / 90) | 0) % 2;
-    gc.fillStyle = '#3d4245';
-    for (let i = 0; i < 5; i++) {
-      gc.fillRect(-z * 0.46 + i * z * 0.2 + (tr ? z * 0.04 : 0), -z * 0.38, z * 0.07, z * 0.2);
-      gc.fillRect(-z * 0.46 + i * z * 0.2 + (tr ? z * 0.04 : 0), z * 0.18, z * 0.07, z * 0.2);
-    }
-    gc.fillStyle = '#55603c';
-    gc.fillRect(-z * 0.44, -z * 0.22, z * 0.88, z * 0.44);
-    gc.fillStyle = o;
-    gc.fillRect(-z * 0.44, -z * 0.06, z * 0.4, z * 0.12);
-    gc.save();
-    gc.rotate((u.ta || 0) - a);
-    gc.fillStyle = '#6b7849';
-    gc.fillRect(-z * 0.18, -z * 0.17, z * 0.36, z * 0.34);
-    gc.fillStyle = '#2e3320';
-    gc.fillRect(z * 0.1, -z * 0.05, z * 0.6, z * 0.1);
-    gc.fillStyle = o;
-    gc.fillRect(-z * 0.1, -z * 0.08, z * 0.16, z * 0.16);
-    gc.restore();
-    gc.restore();
-  } else {
-    gc.save();
-    gc.translate(px, py);
-    if (PF.set.shadow) {
-      gc.fillStyle = 'rgba(0,0,0,.28)';
-      gc.fillRect(-z * 0.2, z * 0.2, z * 0.45, z * 0.14);
-    }
-    const st = Math.sin(t / 110 + u.id) * z * 0.04;
-    gc.fillStyle = '#2e2e34';
-    gc.fillRect(-z * 0.12, z * 0.05 + st, z * 0.1, z * 0.22);
-    gc.fillRect(z * 0.02, z * 0.05 - st, z * 0.1, z * 0.22);
-    gc.fillStyle = o;
-    gc.fillRect(-z * 0.17, -z * 0.16, z * 0.34, z * 0.26);
-    gc.fillStyle = '#e3c9a3';
-    gc.fillRect(-z * 0.1, -z * 0.3, z * 0.2, z * 0.16);
-    gc.fillStyle = '#3d4a2b';
-    gc.fillRect(-z * 0.12, -z * 0.34, z * 0.24, z * 0.08);
-    gc.rotate(u.a || 0);
-    gc.fillStyle = '#53585e';
-    gc.fillRect(0, -z * 0.08, z * 0.5, z * 0.1);
-    gc.fillStyle = '#b64a2b';
-    gc.fillRect(z * 0.46, -z * 0.1, z * 0.1, z * 0.14);
-    gc.restore();
-  }
+  if (u.k === 'plane') drawPlane(u, t, px, py, z, o);
+  else if (u.k === 'tank') drawArmor(u, t, px, py, z, o, false);
+  else if (u.k === 'howitzer') drawArmor(u, t, px, py, z, o, true);
+  else drawSoldier(u, t, px, py, z, o);
   if (u.hp < u.max) {
     gc.fillStyle = '#000';
     gc.fillRect(px - z * 0.4, py - z * 0.6, z * 0.8, 3);
     gc.fillStyle = u.hp / u.max > 0.5 ? '#5be08a' : '#ff6b6b';
     gc.fillRect(px - z * 0.4, py - z * 0.6, z * 0.8 * Math.max(0, u.hp / u.max), 3);
+  }
+}
+
+let QX = 0;
+let QY = 0;
+let QGX = 0;
+let QGY = 0;
+
+export function arcOf(p: Pick<Projectile, 'k' | 'sx' | 'sy' | 'tx' | 'ty'>): number {
+  const d = Math.hypot(p.tx - p.sx, p.ty - p.sy);
+  return p.k === 'n' ? Math.min(d * 0.26, 20) : p.k === 's' ? Math.min(d * 0.38, 6.5) : Math.min(d * 0.2, 12);
+}
+
+function projAt(p: Projectile, tt: number, z: number, Hh: number): void {
+  const gx = R_ox + (p.sx + (p.tx - p.sx) * tt) * z;
+  const gy = R_oy + (p.sy + (p.ty - p.sy) * tt) * z;
+  QGX = gx;
+  QGY = gy;
+  QX = gx;
+  QY = gy - Math.sin(Math.PI * tt) * Hh * z;
+}
+
+function trefoil(x: number, y: number, r: number, col: string): void {
+  gc.fillStyle = col;
+  for (let i = 0; i < 3; i++) {
+    const a = i * 2.0944 - 1.5708;
+    gc.beginPath();
+    gc.moveTo(x, y);
+    gc.arc(x, y, r, a - 0.52, a + 0.52);
+    gc.closePath();
+    gc.fill();
+  }
+  gc.beginPath();
+  gc.arc(x, y, r * 0.2, 0, Math.PI * 2);
+  gc.fill();
+}
+
+function drawRocket(p: Projectile, t: number, z: number): void {
+  const nuke = p.k === 'n';
+  const Hh = arcOf(p);
+  const tt = Math.min(1, Math.max(0, p.t));
+  const dur = p.dur || 2;
+  const pq = [0.5, 0.8, 1][PF.set.part] || 1;
+  projAt(p, tt, z, Hh);
+  const x = QX;
+  const y = QY;
+  const gx = QGX;
+  const gy = QGY;
+  projAt(p, Math.min(1, tt + 0.012), z, Hh);
+  const x1 = QX;
+  const y1 = QY;
+  projAt(p, Math.max(0, tt - 0.012), z, Hh);
+  const x0 = QX;
+  const y0 = QY;
+  const ang = Math.abs(x1 - x0) + Math.abs(y1 - y0) > 1e-4 ? Math.atan2(y1 - y0, x1 - x0) : -Math.PI / 2;
+  const trailS = nuke ? 1.8 : 1.0;
+  const N = Math.max(4, Math.round((nuke ? 18 : 12) * pq));
+  const c0 = nuke ? '#ffd9a0' : '#ffe0b0';
+  const c1 = nuke ? '#b9b9c2' : '#e6e6ec';
+  for (let i = N; i >= 1; i--) {
+    const q = tt - ((i / N) * trailS) / dur;
+    if (q < 0) continue;
+    projAt(p, q, z, Hh);
+    const f = i / N;
+    gc.globalAlpha = (nuke ? 0.5 : 0.4) * (1 - f);
+    gc.fillStyle = f < 0.18 ? c0 : c1;
+    gc.beginPath();
+    gc.arc(QX, QY, z * (nuke ? 0.12 : 0.075) * (1 + f * (nuke ? 3.4 : 2.4)), 0, Math.PI * 2);
+    gc.fill();
+  }
+  gc.globalAlpha = 1;
+  if (PF.set.shadow) {
+    gc.fillStyle = 'rgba(0,0,0,.28)';
+    gc.beginPath();
+    gc.ellipse(gx, gy + z * 0.05, z * (nuke ? 0.28 : 0.18), z * (nuke ? 0.1 : 0.07), 0, 0, Math.PI * 2);
+    gc.fill();
+  }
+  if (nuke) {
+    const hr = z * 1.05;
+    const hg = gc.createRadialGradient(x, y, 0, x, y, hr);
+    hg.addColorStop(0, `rgba(255,70,50,${0.28 + 0.14 * Math.sin(t / 110)})`);
+    hg.addColorStop(1, 'rgba(255,70,50,0)');
+    gc.fillStyle = hg;
+    gc.beginPath();
+    gc.arc(x, y, hr, 0, Math.PI * 2);
+    gc.fill();
+  }
+  const S = z * (nuke ? 1.2 : 0.9);
+  const fl = 0.65 + 0.35 * Math.abs(Math.sin(t / 32 + p.sx * 3.1));
+  const f0 = (nuke ? 0.75 : 0.5) * fl;
+  const oCol = G.CS[p.o] || '#ef4444';
+  gc.save();
+  gc.translate(x, y);
+  gc.rotate(ang);
+  gc.scale(S, S);
+  gc.fillStyle = '#ff6a1a';
+  gc.beginPath();
+  gc.moveTo(-0.45, -0.08);
+  gc.lineTo(-0.45 - f0, 0);
+  gc.lineTo(-0.45, 0.08);
+  gc.closePath();
+  gc.fill();
+  gc.fillStyle = '#ffd23f';
+  gc.beginPath();
+  gc.moveTo(-0.45, -0.05);
+  gc.lineTo(-0.45 - f0 * 0.7, 0);
+  gc.lineTo(-0.45, 0.05);
+  gc.closePath();
+  gc.fill();
+  gc.fillStyle = nuke ? '#c4c9b8' : '#f2f2f2';
+  gc.fillRect(-0.45, -0.1, 0.8, 0.2);
+  gc.fillStyle = 'rgba(0,0,0,.18)';
+  gc.fillRect(-0.45, 0.04, 0.8, 0.06);
+  gc.fillStyle = nuke ? '#d83b2b' : oCol;
+  gc.beginPath();
+  gc.moveTo(0.35, -0.1);
+  gc.lineTo(0.62, 0);
+  gc.lineTo(0.35, 0.1);
+  gc.closePath();
+  gc.fill();
+  gc.fillStyle = '#9aa0aa';
+  gc.beginPath();
+  gc.moveTo(-0.2, -0.1);
+  gc.lineTo(-0.46, -0.24);
+  gc.lineTo(-0.46, -0.1);
+  gc.closePath();
+  gc.fill();
+  gc.beginPath();
+  gc.moveTo(-0.2, 0.1);
+  gc.lineTo(-0.46, 0.24);
+  gc.lineTo(-0.46, 0.1);
+  gc.closePath();
+  gc.fill();
+  if (nuke) {
+    gc.fillStyle = '#f6c744';
+    gc.fillRect(-0.05, -0.1, 0.22, 0.2);
+    gc.fillStyle = '#111';
+    for (let i = 0; i < 3; i++) gc.fillRect(-0.05 + i * 0.08, -0.1, 0.04, 0.2);
+    gc.fillStyle = oCol;
+    gc.fillRect(-0.3, -0.1, 0.08, 0.2);
+  } else {
+    gc.fillStyle = oCol;
+    gc.fillRect(0.08, -0.1, 0.1, 0.2);
+  }
+  gc.restore();
+  if (PF.set.part > 0) {
+    const ex = x - Math.cos(ang) * 0.5 * S;
+    const ey = y - Math.sin(ang) * 0.5 * S;
+    const er = S * (nuke ? 0.75 : 0.5) * (0.8 + 0.2 * fl);
+    const gr = gc.createRadialGradient(ex, ey, 0, ex, ey, er);
+    gr.addColorStop(0, `rgba(255,190,90,${nuke ? 0.6 : 0.5})`);
+    gr.addColorStop(1, 'rgba(255,120,40,0)');
+    gc.globalCompositeOperation = 'lighter';
+    gc.fillStyle = gr;
+    gc.beginPath();
+    gc.arc(ex, ey, er, 0, Math.PI * 2);
+    gc.fill();
+    gc.globalCompositeOperation = 'source-over';
+  }
+}
+
+function drawShell(p: Projectile, z: number): void {
+  const Hh = arcOf(p);
+  const tt = Math.min(1, Math.max(0, p.t));
+  const dur = p.dur || 1;
+  projAt(p, tt, z, Hh);
+  const x = QX;
+  const y = QY;
+  const gx = QGX;
+  const gy = QGY;
+  projAt(p, Math.min(1, tt + 0.02), z, Hh);
+  const x1 = QX;
+  const y1 = QY;
+  projAt(p, Math.max(0, tt - 0.02), z, Hh);
+  const x0 = QX;
+  const y0 = QY;
+  const ang = Math.abs(x1 - x0) + Math.abs(y1 - y0) > 1e-4 ? Math.atan2(y1 - y0, x1 - x0) : 0;
+  for (let i = 6; i >= 1; i--) {
+    const q = tt - (i * 0.07) / dur;
+    if (q < 0) continue;
+    projAt(p, q, z, Hh);
+    gc.globalAlpha = 0.3 * (1 - i / 7);
+    gc.fillStyle = '#eceef2';
+    gc.beginPath();
+    gc.arc(QX, QY, z * (0.035 + 0.02 * i), 0, Math.PI * 2);
+    gc.fill();
+  }
+  gc.globalAlpha = 1;
+  if (PF.set.shadow) {
+    gc.fillStyle = 'rgba(0,0,0,.3)';
+    gc.beginPath();
+    gc.ellipse(gx, gy, z * 0.1, z * 0.045, 0, 0, Math.PI * 2);
+    gc.fill();
+  }
+  gc.save();
+  gc.translate(x, y);
+  gc.rotate(ang);
+  gc.fillStyle = '#2b2c2e';
+  gc.fillRect(-z * 0.13, -z * 0.05, z * 0.26, z * 0.1);
+  gc.fillStyle = '#caa24a';
+  gc.fillRect(z * 0.1, -z * 0.04, z * 0.06, z * 0.08);
+  gc.restore();
+  if (tt > 0.5) {
+    const a = Math.min(1, (tt - 0.5) / 0.5);
+    const own = p.o === G.ME || isFriend(G.ME, p.o);
+    const cx = R_ox + p.tx * z;
+    const cy = R_oy + p.ty * z;
+    const rr = z * (1.5 - 0.85 * a);
+    gc.strokeStyle = own ? `rgba(255,230,150,${0.25 + 0.45 * a})` : `rgba(255,80,60,${0.25 + 0.55 * a})`;
+    gc.lineWidth = Math.max(1.5, z * 0.1);
+    gc.beginPath();
+    gc.arc(cx, cy, rr, 0, Math.PI * 2);
+    gc.stroke();
+    gc.beginPath();
+    gc.moveTo(cx - rr * 0.5, cy);
+    gc.lineTo(cx + rr * 0.5, cy);
+    gc.moveTo(cx, cy - rr * 0.5);
+    gc.lineTo(cx, cy + rr * 0.5);
+    gc.stroke();
+  }
+}
+
+function drawDrone(p: Projectile, t: number, z: number, px: number, py: number): void {
+  if (PF.set.shadow) {
+    gc.fillStyle = 'rgba(0,0,0,.25)';
+    gc.fillRect(px - z * 0.1, py + z * 0.15, z * 0.5, z * 0.2);
+  }
+  gc.fillStyle = '#111';
+  gc.fillRect(px - z * 0.3, py - z * 0.15, z * 0.6, z * 0.3);
+  gc.fillStyle = G.CS[p.o] || '#fff';
+  gc.fillRect(px - z * 0.12, py - z * 0.2, z * 0.24, z * 0.4);
+  gc.fillStyle = '#ddd';
+  const w = (Math.floor(t / 60) % 2 ? 0.9 : 0.5) * z;
+  gc.fillRect(px - w / 2, py - z * 0.35, w, z * 0.1);
+}
+
+function drawNukeZone(p: Projectile, t: number, z: number): void {
+  const cx = R_ox + p.tx * z;
+  const cy = R_oy + p.ty * z;
+  const rz = NRD * z;
+  if (cx < -rz || cx > G.cw + rz || cy < -rz || cy > G.ch + rz) return;
+  const pulse = 0.5 + 0.5 * Math.sin(t / 160);
+  const g = gc;
+  g.fillStyle = `rgba(255,40,30,${0.07 + 0.07 * pulse})`;
+  g.beginPath();
+  g.arc(cx, cy, rz, 0, Math.PI * 2);
+  g.fill();
+  g.setLineDash([8, 6]);
+  g.lineWidth = 2;
+  g.strokeStyle = `rgba(255,150,70,${0.55 + 0.4 * pulse})`;
+  g.beginPath();
+  g.arc(cx, cy, rz, 0, Math.PI * 2);
+  g.stroke();
+  g.strokeStyle = `rgba(255,50,40,${0.7 + 0.3 * pulse})`;
+  g.beginPath();
+  g.arc(cx, cy, NRK * z, 0, Math.PI * 2);
+  g.stroke();
+  g.setLineDash([]);
+  trefoil(cx, cy, Math.max(8, z * 1.1), `rgba(255,70,50,${0.55 + 0.35 * pulse})`);
+}
+
+function drawNukeFx(n: NukeFx, t: number): void {
+  const z = G.cam.z;
+  const age = (t - n.t0) / 1000;
+  if (age < 0 || age > 16.5) return;
+  const cx = R_ox + n.x * z;
+  const cy = R_oy + n.y * z;
+  const S = Math.min(z, Math.max(0.7, G.ch / (NRK * 3.4)));
+  const rB = NRD * 1.8 * z;
+  if (cx < -rB || cx > G.cw + rB || cy < -rB - NRK * 2.4 * S || cy > G.ch + rB) return;
+  const fade = age < 10 ? 1 : Math.max(0, 1 - (age - 10) / 6.5);
+  const g = gc;
+  if (age < 4.5) {
+    const gl = 1 - age / 4.5;
+    g.globalCompositeOperation = 'lighter';
+    const gr = g.createRadialGradient(cx, cy, 0, cx, cy, NRD * 1.5 * z);
+    gr.addColorStop(0, `rgba(255,200,110,${0.55 * gl})`);
+    gr.addColorStop(0.5, `rgba(255,120,40,${0.28 * gl})`);
+    gr.addColorStop(1, 'rgba(255,80,20,0)');
+    g.fillStyle = gr;
+    g.beginPath();
+    g.arc(cx, cy, NRD * 1.5 * z, 0, Math.PI * 2);
+    g.fill();
+    g.globalCompositeOperation = 'source-over';
+  }
+  if (age < 5.6) {
+    const ft = Math.min(1, age / 1.7);
+    const fe = 1 - Math.pow(1 - ft, 3);
+    const rf = Math.max(1, NRK * z * 1.08 * fe);
+    const fa = age < 2.2 ? 1 : Math.max(0, 1 - (age - 2.2) / 3.4);
+    const gr = g.createRadialGradient(cx, cy, 0, cx, cy, rf);
+    gr.addColorStop(0, `rgba(255,255,235,${fa})`);
+    gr.addColorStop(0.35, `rgba(255,214,100,${fa})`);
+    gr.addColorStop(0.7, `rgba(255,110,30,${0.85 * fa})`);
+    gr.addColorStop(1, 'rgba(110,26,8,0)');
+    g.fillStyle = gr;
+    g.beginPath();
+    g.arc(cx, cy, rf, 0, Math.PI * 2);
+    g.fill();
+  }
+  for (let i = 0; i < 2; i++) {
+    const ta = age - i * 0.35;
+    if (ta <= 0 || ta > 2.8) continue;
+    const q = ta / 2.8;
+    const r = NRD * 1.45 * z * (1 - Math.pow(1 - q, 2));
+    g.strokeStyle = i ? `rgba(255,205,140,${0.6 * (1 - q)})` : `rgba(255,255,255,${0.9 * (1 - q)})`;
+    g.lineWidth = Math.max(2, z * 0.55 * (1 - q) + 2);
+    g.beginPath();
+    g.arc(cx, cy, r, 0, Math.PI * 2);
+    g.stroke();
+  }
+  if (age > 0.4 && age < 10) {
+    const du = Math.min(1, (age - 0.4) / 4.5);
+    const rr = NRK * z * 1.5 * du + 2;
+    g.fillStyle = `rgba(112,92,76,${0.34 * (1 - du * 0.75) * fade})`;
+    g.beginPath();
+    g.ellipse(cx, cy, rr, rr * 0.42, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+  if (age > 0.25) {
+    const u = Math.min(1, (age - 0.25) / 6);
+    const e = 1 - Math.pow(1 - u, 2.2);
+    const heat = Math.max(0, 1 - age / 7.5);
+    const hs = NRK * 2.1 * S * e;
+    const rx = NRK * S * (0.26 + 0.62 * e);
+    const ry = rx * 0.6;
+    const capY = cy - hs;
+    const ws = NRK * S * (0.2 + 0.12 * e);
+    const ns = 14;
+    for (let i = 0; i <= ns; i++) {
+      const f = i / ns;
+      const y = cy - hs * f;
+      const rr = ws * (0.42 + 0.5 * Math.pow(1 - f, 3) + 0.1 * Math.sin(i * 1.9 + age * 2.3)) + 1;
+      const hh = heat * (1 - f * 0.55);
+      g.fillStyle = `rgba(${(72 + hh * 183) | 0},${(60 + hh * 80) | 0},${(56 - hh * 6) | 0},${0.9 * fade})`;
+      g.beginPath();
+      g.arc(cx + Math.sin(i * 1.3 + age) * ws * 0.06, y, rr, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.fillStyle = `rgba(44,35,33,${0.9 * fade})`;
+    g.beginPath();
+    g.ellipse(cx, capY + ry * 0.35, rx * 1.02, ry * 0.78, 0, 0, Math.PI * 2);
+    g.fill();
+    const gr = g.createRadialGradient(cx, capY - ry * 0.3, 0, cx, capY, rx);
+    gr.addColorStop(0, `rgba(${(150 + heat * 105) | 0},${(140 + heat * 85) | 0},${(132 + heat * 28) | 0},${fade})`);
+    gr.addColorStop(0.6, `rgba(${(100 + heat * 130) | 0},${(88 + heat * 38) | 0},${(80 - heat * 40) | 0},${fade})`);
+    gr.addColorStop(1, `rgba(52,41,38,${0.95 * fade})`);
+    g.fillStyle = gr;
+    g.beginPath();
+    g.ellipse(cx, capY, rx, ry, 0, 0, Math.PI * 2);
+    g.fill();
+    for (let j = 0; j < 14; j++) {
+      const th = (j / 14) * 6.283;
+      const sn = Math.sin(th);
+      if (sn > 0.45) continue;
+      const br = rx * 0.26 * (1 + 0.22 * Math.sin(th * 3 + age * 1.4));
+      const bx = cx + Math.cos(th) * rx * 0.93;
+      const by = capY + sn * ry * 0.9;
+      g.fillStyle = `rgba(${(120 + heat * 110) | 0},${(104 + heat * 60) | 0},${(96 - heat * 20) | 0},${0.5 * fade})`;
+      g.beginPath();
+      g.arc(bx, by, br, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.strokeStyle = `rgba(226,204,182,${0.35 * fade})`;
+    g.lineWidth = Math.max(1, S * 0.35);
+    g.beginPath();
+    g.ellipse(cx, capY + ry * 0.42, rx * 0.82, ry * 0.45, 0, 0.1 * Math.PI, 0.9 * Math.PI);
+    g.stroke();
+  }
+  if (age > 1.2 && age < 14) {
+    const ne = z >= 5 ? 24 : 8;
+    const ef = Math.min(1, (age - 1.2) / 1.5) * Math.max(0, Math.min(1, 1 - (age - 8) / 6));
+    for (let i = 0; i < ne; i++) {
+      const a = hash(i, 3, 7) * 6.283;
+      const d = Math.sqrt(hash(i, 5, 8)) * NRK * 0.92;
+      const fl = 0.5 + 0.5 * Math.sin(t / (110 + hash(i, 1, 1) * 220) + i * 3);
+      const s = Math.max(1.5, z * 0.13);
+      g.fillStyle = `rgba(255,${(90 + fl * 90) | 0},26,${ef * (0.3 + 0.5 * fl)})`;
+      g.fillRect(cx + Math.cos(a) * d * z - s / 2, cy + Math.sin(a) * d * z - s / 2, s, s);
+    }
+  }
+}
+
+function nukeFlash(ctx: CanvasRenderingContext2D, t: number): void {
+  let a = 0;
+  for (const n of G.NK) {
+    const age = (t - n.t0) / 1000;
+    if (age < 0 || age > 1.5) continue;
+    const near = inView(n.x, n.y) ? 1 : 0.4;
+    const k = age < 0.1 ? age / 0.1 : Math.max(0, 1 - (age - 0.1) / 1.35);
+    a = Math.max(a, 0.94 * k * near);
+  }
+  if (a > 0.01) {
+    ctx.fillStyle = `rgba(255,250,235,${a})`;
+    ctx.fillRect(0, 0, G.cw, G.ch);
   }
 }
 
@@ -1131,17 +2251,20 @@ export function iconFor(t: string, cv: HTMLCanvasElement): void {
   const sc = gc;
   const ocam = [G.cam.z, R_ox, R_oy];
   const osh = PF.set.shadow;
+  const onk = NIGHTK;
   gc = c;
   G.cam.z = cv.width * 0.95;
   R_ox = 0;
   R_oy = cv.height * 0.12;
   PF.set.shadow = 0;
+  NIGHTK = 0;
   drawB({ t, o: G.ME, x: 0, y: 0, hp: 1, max: 1, cap: false, cd: 0, dead: false }, 0);
   gc = sc;
   G.cam.z = ocam[0];
   R_ox = ocam[1];
   R_oy = ocam[2];
   PF.set.shadow = osh;
+  NIGHTK = onk;
 }
 
 export function drawToolIcon(id: string, cv: HTMLCanvasElement): void {
@@ -1174,14 +2297,50 @@ export function drawToolIcon(id: string, cv: HTMLCanvasElement): void {
     c.fillStyle = meCol;
     c.fillRect(14, 3, 2, 18);
     c.fillRect(16, 3, 10, 7);
-  } else if (id === 'tank' || id === 'rpg' || id === 'plane') {
+  } else if (id === 'nuke') {
+    c.fillStyle = '#4a5040';
+    c.fillRect(11, 5, 8, 19);
+    c.fillStyle = '#d83b2b';
+    c.fillRect(11, 2, 8, 5);
+    c.fillRect(12, 0, 6, 3);
+    c.fillStyle = '#f6c744';
+    c.fillRect(11, 11, 8, 7);
+    c.fillStyle = '#111';
+    c.beginPath();
+    c.arc(15, 14.5, 2.4, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = '#f6c744';
+    for (let i = 0; i < 3; i++) {
+      const a = i * 2.094 - 1.57;
+      c.beginPath();
+      c.moveTo(15, 14.5);
+      c.arc(15, 14.5, 2.1, a - 0.5, a + 0.5);
+      c.closePath();
+      c.fill();
+    }
+    c.fillStyle = '#2c3028';
+    c.fillRect(7, 20, 4, 6);
+    c.fillRect(19, 20, 4, 6);
+    c.fillStyle = '#ffb02e';
+    c.fillRect(12, 24, 6, 3);
+    c.fillStyle = '#ffe27a';
+    c.fillRect(13, 24, 4, 2);
+  } else if (id === 'tank' || id === 'rpg' || id === 'plane' || id === 'howitzer') {
     c.restore();
     c.save();
     const oz = G.cam.z;
     const osh = PF.set.shadow;
-    G.cam.z = 24 * k;
+    G.cam.z = (id === 'howitzer' ? 18 : 24) * k;
     PF.set.shadow = 0;
-    drawUnit(c, { k: id, o: G.ME, x: 0.6, y: 0.62, hp: 1, max: 1, a: id === 'plane' ? -0.6 : 0, ta: 0, id: 1 }, 0, 0, 0);
+    drawUnit(
+      c,
+      id === 'howitzer'
+        ? { k: id, o: G.ME, x: 0.56, y: 0.86, hp: 1, max: 1, a: 0, ta: 0, id: 1 }
+        : { k: id, o: G.ME, x: 0.6, y: 0.62, hp: 1, max: 1, a: id === 'plane' ? -0.6 : 0, ta: 0, id: 1 },
+      0,
+      0,
+      0,
+    );
     G.cam.z = oz;
     PF.set.shadow = osh;
   } else {
@@ -1208,6 +2367,7 @@ let cloudPatC: CanvasPattern | null = null;
 let fpsT = 0;
 let fpsN = 0;
 let fpsV = 0;
+let mmN = 0;
 
 function mkPatterns(ctx: CanvasRenderingContext2D): void {
   const a = document.createElement('canvas');
@@ -1274,10 +2434,23 @@ export function drawMini(): void {
     mctx.fillStyle = G.P[b.o]?.alive ? G.CS[b.o] : '#888';
     mctx.fillRect(b.x * sx - 1, b.y * sy - 1, 3, 3);
   }
+  for (const n of G.NK) {
+    const age = (RT - n.t0) / 1000;
+    if (age < 0 || age > 12) continue;
+    mctx.fillStyle = `rgba(255,${age < 2 ? 200 : 90},40,${Math.max(0, 0.9 - age / 13)})`;
+    mctx.beginPath();
+    mctx.arc(n.x * sx, n.y * sy, Math.max(3, NRD * sx * Math.min(1, 0.4 + age / 3)), 0, Math.PI * 2);
+    mctx.fill();
+  }
   for (const p of G.PR) {
     if (p.t < 0) continue;
-    mctx.fillStyle = p.k === 'm' ? '#fff' : '#ffe27a';
-    mctx.fillRect(p.x * sx - 1, p.y * sy - 1, 2, 2);
+    if (p.k === 'n') {
+      mctx.fillStyle = ((RT / 200) | 0) % 2 ? '#ff3b2b' : '#fff';
+      mctx.fillRect(p.x * sx - 2, p.y * sy - 2, 5, 5);
+    } else {
+      mctx.fillStyle = p.k === 'm' ? '#fff' : '#ffe27a';
+      mctx.fillRect(p.x * sx - 1, p.y * sy - 1, 2, 2);
+    }
   }
   for (const u of G.U) {
     mctx.fillStyle = G.CS[u.o] || '#fff';
@@ -1298,6 +2471,7 @@ export function renderWorld(t: number): void {
   if (!cvs) return;
   const ctx = cvs.getContext('2d')!;
   gc = ctx;
+  RT = t;
   const { dpr, cw, ch, W, H, N, cam } = G;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   if (!wavePatC) mkPatterns(ctx);
@@ -1369,12 +2543,13 @@ export function renderWorld(t: number): void {
       ctx.setLineDash([]);
     }
   }
-  if (G.phase === 'play' && (G.tool === 'missile' || G.tool === 'drone')) {
-    const rr = G.tool === 'missile' ? mr(G.ME) : 30;
-    const tp = G.tool === 'missile' ? 'silo' : 'dfac';
+  if (G.phase === 'play' && (G.tool === 'missile' || G.tool === 'drone' || G.tool === 'nuke')) {
+    const nk = G.tool === 'nuke';
+    const rr = G.tool === 'missile' ? mr(G.ME) : G.tool === 'drone' ? 30 : NR;
+    const tp = G.tool === 'drone' ? 'dfac' : 'silo';
     ctx.setLineDash([4, 6]);
     ctx.lineWidth = 2;
-    ctx.strokeStyle = 'rgba(255,230,150,.55)';
+    ctx.strokeStyle = nk ? 'rgba(255,120,90,.7)' : 'rgba(255,230,150,.55)';
     for (const b of G.B) {
       if (b.dead || b.o !== G.ME || b.t !== tp) continue;
       ctx.beginPath();
@@ -1383,6 +2558,14 @@ export function renderWorld(t: number): void {
     }
     ctx.setLineDash([]);
   }
+  for (const r of G.RB) {
+    if (r.x < x0 - 2 || r.x > x1 + 1 || r.y < y0 - 2 || r.y > y1 + 1) continue;
+    drawRubble(r, t);
+  }
+  for (const p of G.PR) {
+    if (p.k === 'n' && p.t > 0.02 && !p.dead) drawNukeZone(p, t, z);
+  }
+  NIGHTK = PF.set.night && G.phase === 'play' ? 0.5 - 0.5 * Math.cos(((G.gameT / 260) % 1) * 6.283) : 0;
   for (const b of G.B) {
     if (b.x < x0 - 2 || b.x > x1 + 1 || b.y < y0 - 2 || b.y > y1 + 1) continue;
     drawB(b, t);
@@ -1426,6 +2609,10 @@ export function renderWorld(t: number): void {
     }
     ctx.setLineDash([]);
   }
+  for (const w of G.WK) {
+    if (w.x < x0 - 2 || w.x > x1 + 2 || w.y < y0 - 2 || w.y > y1 + 2) continue;
+    drawWreck(w, t);
+  }
   for (const u of G.U) {
     if (u.x < x0 - 2 || u.x > x1 + 2 || u.y < y0 - 2 || u.y > y1 + 2) continue;
     if (u.k !== 'plane') drawUnit(ctx, u, t, R_ox, R_oy);
@@ -1444,19 +2631,10 @@ export function renderWorld(t: number): void {
     if (p.t < 0) continue;
     const px = R_ox + p.x * z;
     const py = R_oy + p.y * z;
-    if (p.k === 'm') {
-      const dist = Math.hypot(p.tx - p.sx, p.ty - p.sy);
-      const hh = Math.sin(Math.PI * p.t) * Math.min(dist * 0.2, 12) * z;
-      drawMissile(ctx, p.o, px, py, z, hh);
-    } else {
-      ctx.fillStyle = '#111';
-      ctx.fillRect(px - z * 0.3, py - z * 0.15, z * 0.6, z * 0.3);
-      ctx.fillStyle = G.CS[p.o] || '#fff';
-      ctx.fillRect(px - z * 0.12, py - z * 0.2, z * 0.24, z * 0.4);
-      ctx.fillStyle = '#ddd';
-      const w = (Math.floor(t / 60) % 2 ? 0.9 : 0.5) * z;
-      ctx.fillRect(px - w / 2, py - z * 0.35, w, z * 0.1);
-    }
+    if (px < -320 || px > cw + 320 || py < -420 || py > ch + 320) continue;
+    if (p.k === 'm' || p.k === 'n') drawRocket(p, t, z);
+    else if (p.k === 's') drawShell(p, z);
+    else drawDrone(p, t, z, px, py);
   }
   for (const u of G.U) {
     if (u.k === 'plane' && u.x > x0 - 3 && u.x < x1 + 3 && u.y > y0 - 3 && u.y < y1 + 3) {
@@ -1485,6 +2663,8 @@ export function renderWorld(t: number): void {
     ctx.fillStyle = `rgba(8,16,70,${a})`;
     ctx.fillRect(0, 0, cw, ch);
   }
+  for (const n of G.NK) drawNukeFx(n, t);
+  nukeFlash(ctx, t);
   if (G.phase === 'play' && G.hover && G.brush && G.tool !== 'hand') {
     const ok = G.hover.ok;
     ctx.fillStyle = ok ? 'rgba(91,224,138,.35)' : 'rgba(255,107,107,.35)';
@@ -1496,6 +2676,24 @@ export function renderWorld(t: number): void {
   if (G.phase === 'play' && G.aim.on) {
     const ax = R_ox + G.aim.tx * z;
     const ay = R_oy + G.aim.ty * z;
+    if (G.tool === 'nuke') {
+      ctx.fillStyle = 'rgba(255,60,40,.12)';
+      ctx.beginPath();
+      ctx.arc(ax, ay, NRD * z, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.setLineDash([8, 6]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(255,150,70,.9)';
+      ctx.beginPath();
+      ctx.arc(ax, ay, NRD * z, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = '#ff3b2b';
+      ctx.beginPath();
+      ctx.arc(ax, ay, NRK * z, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      trefoil(ax, ay, Math.max(9, z * 1.1), 'rgba(255,70,50,.85)');
+    }
     ctx.strokeStyle = G.aim.err ? '#ff6b6b' : '#fff';
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 6]);
@@ -1527,5 +2725,5 @@ export function renderWorld(t: number): void {
     ctx.textAlign = 'left';
     ctx.fillText(`${fpsV} fps`, cw - 58, ch - 11);
   }
-  drawMini();
+  if (mmN++ % 3 === 0) drawMini();
 }

@@ -18,11 +18,16 @@ interface LocalStore {
   players: Record<string, PlayerRecord>;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), '.data');
+const DATA_DIR =
+  process.env.VERCEL === '1'
+    ? path.resolve('/tmp', '.data')
+    : path.resolve(process.cwd(), '.data');
 const DATA_FILE = path.join(DATA_DIR, 'pixelfront-db.json');
 
 let supabase: SupabaseClient | null = null;
-let supabaseReady = false;
+let supabaseConfigured = false;
+let supabaseTableMissing = false;
+let schemaWarningLogged = false;
 
 function normalizeSupabaseUrl(raw: string | undefined): string {
   const cleaned = String(raw || '').trim().replace(/^["']+|["']+$/g, '');
@@ -34,6 +39,28 @@ function normalizeSupabaseUrl(raw: string | undefined): string {
   } catch {
     return '';
   }
+}
+
+function isMissingTableError(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false;
+  if (error.code === 'PGRST205' || error.code === '42P01') return true;
+  const msg = String(error.message || '');
+  return msg.includes('schema cache') || msg.includes('does not exist');
+}
+
+function handleSupabaseError(op: string, error: { code?: string; message?: string } | null | undefined): void {
+  if (!error) return;
+  if (isMissingTableError(error)) {
+    supabaseTableMissing = true;
+    if (!schemaWarningLogged) {
+      schemaWarningLogged = true;
+      console.warn(
+        '[DB] Table public.players not found in Supabase. Run supabase_schema.sql in Supabase SQL Editor. Falling back to local store.',
+      );
+    }
+    return;
+  }
+  console.error(`[Supabase] ${op} error:`, error.message);
 }
 
 function initSupabase() {
@@ -53,7 +80,7 @@ function initSupabase() {
     supabase = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
-    supabaseReady = true;
+    supabaseConfigured = true;
     console.log('[DB] Supabase client initialized (ANON_KEY)');
   } else {
     console.log(
@@ -63,6 +90,31 @@ function initSupabase() {
 }
 
 initSupabase();
+
+export async function verifySupabaseConnection(): Promise<{
+  configured: boolean;
+  connected: boolean;
+  missingTable: boolean;
+}> {
+  if (!supabaseConfigured || !supabase) {
+    return { configured: false, connected: false, missingTable: false };
+  }
+  try {
+    const { error } = await supabase.from('players').select('slug').limit(1);
+    if (error) {
+      handleSupabaseError('verifySupabaseConnection', error);
+      return {
+        configured: true,
+        connected: false,
+        missingTable: supabaseTableMissing,
+      };
+    }
+    supabaseTableMissing = false;
+    return { configured: true, connected: true, missingTable: false };
+  } catch {
+    return { configured: true, connected: false, missingTable: supabaseTableMissing };
+  }
+}
 
 function readLocalStore(): LocalStore {
   try {
@@ -91,11 +143,16 @@ function writeLocalStore(store: LocalStore): void {
 }
 
 export function isSupabaseConnected(): boolean {
-  return supabaseReady && supabase !== null;
+  return supabaseConfigured && supabase !== null && !supabaseTableMissing;
+}
+
+export function isSupabaseMissingTable(): boolean {
+  return supabaseConfigured && supabaseTableMissing;
 }
 
 export async function getPlayerBySlug(slug: string): Promise<PlayerRecord | null> {
-  if (supabase) {
+  const local = readLocalStore();
+  if (supabase && !supabaseTableMissing) {
     try {
       const { data, error } = await supabase
         .from('players')
@@ -106,15 +163,35 @@ export async function getPlayerBySlug(slug: string): Promise<PlayerRecord | null
       if (!error && data) {
         return data as PlayerRecord;
       }
+      if (!error && !data && local.players[slug]) {
+        const rec = local.players[slug];
+        const { error: upErr } = await supabase.from('players').upsert(
+          {
+            slug: rec.slug,
+            name: rec.name,
+            salt: rec.salt,
+            password_hash: rec.password_hash,
+            coins: rec.coins,
+            rating: rec.rating,
+            wins: rec.wins,
+            profile: rec.profile,
+            updated_at: rec.updated_at || new Date().toISOString(),
+          },
+          { onConflict: 'slug' },
+        );
+        if (upErr) {
+          handleSupabaseError('syncLocalPlayerToSupabase', upErr);
+        }
+        return rec;
+      }
       if (error && error.code !== 'PGRST116') {
-        console.error('[Supabase] getPlayerBySlug error:', error.message);
+        handleSupabaseError('getPlayerBySlug', error);
       }
     } catch (err) {
       console.error('[Supabase] getPlayerBySlug exception:', err);
     }
   }
 
-  const local = readLocalStore();
   return local.players[slug] || null;
 }
 
@@ -123,7 +200,7 @@ export async function createPlayerRecord(rec: PlayerRecord): Promise<void> {
   local.players[rec.slug] = rec;
   writeLocalStore(local);
 
-  if (supabase) {
+  if (supabase && !supabaseTableMissing) {
     try {
       const { error } = await supabase.from('players').insert({
         slug: rec.slug,
@@ -137,10 +214,31 @@ export async function createPlayerRecord(rec: PlayerRecord): Promise<void> {
         updated_at: rec.updated_at,
       });
       if (error) {
-        console.error('[Supabase] createPlayerRecord error:', error.message);
+        handleSupabaseError('createPlayerRecord', error);
       }
     } catch (err) {
       console.error('[Supabase] createPlayerRecord exception:', err);
+    }
+  }
+}
+
+export async function updatePlayerPasswordHash(slug: string, passwordHash: string): Promise<void> {
+  const local = readLocalStore();
+  if (local.players[slug]) {
+    local.players[slug].password_hash = passwordHash;
+    writeLocalStore(local);
+  }
+  if (supabase && !supabaseTableMissing) {
+    try {
+      const { error } = await supabase
+        .from('players')
+        .update({ password_hash: passwordHash, updated_at: new Date().toISOString() })
+        .eq('slug', slug);
+      if (error) {
+        handleSupabaseError('updatePlayerPasswordHash', error);
+      }
+    } catch (err) {
+      console.error('[Supabase] updatePlayerPasswordHash exception:', err);
     }
   }
 }
@@ -168,7 +266,7 @@ export async function updatePlayerProfileRecord(
     writeLocalStore(local);
   }
 
-  if (supabase) {
+  if (supabase && !supabaseTableMissing) {
     try {
       const { error } = await supabase
         .from('players')
@@ -181,7 +279,7 @@ export async function updatePlayerProfileRecord(
         })
         .eq('slug', slug);
       if (error) {
-        console.error('[Supabase] updatePlayerProfileRecord error:', error.message);
+        handleSupabaseError('updatePlayerProfileRecord', error);
       }
     } catch (err) {
       console.error('[Supabase] updatePlayerProfileRecord exception:', err);
@@ -192,7 +290,7 @@ export async function updatePlayerProfileRecord(
 export async function getLeaderboardRecords(
   limit = 15,
 ): Promise<Array<{ name: string; rating: number; wins: number }>> {
-  if (supabase) {
+  if (supabase && !supabaseTableMissing) {
     try {
       const { data, error } = await supabase
         .from('players')
@@ -205,6 +303,9 @@ export async function getLeaderboardRecords(
           rating: Number(r.rating) || 0,
           wins: Number(r.wins) || 0,
         }));
+      }
+      if (error) {
+        handleSupabaseError('getLeaderboardRecords', error);
       }
     } catch (err) {
       console.error('[Supabase] getLeaderboardRecords exception:', err);
