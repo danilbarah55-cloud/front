@@ -98,6 +98,7 @@ export let ACC: { slug: string; name: string } | null = null;
 export let authToken = '';
 export let supabaseEnabled = Boolean(directSupabase);
 export let supabaseMissingTable = false;
+export let supabaseRlsBlocked = false;
 export let backendAvailable: boolean | null = null;
 export let storageMode: StorageMode = 'server';
 
@@ -141,6 +142,24 @@ function isMissingTableErr(err: { code?: string; message?: string } | null | und
   if (err.code === 'PGRST205' || err.code === '42P01') return true;
   const msg = String(err.message || '');
   return msg.includes('schema cache') || msg.includes('does not exist');
+}
+
+function isRlsErr(err: { code?: string; message?: string } | null | undefined): boolean {
+  if (!err) return false;
+  if (err.code === '42501') return true;
+  const msg = String(err.message || '').toLowerCase();
+  return msg.includes('row-level security') || msg.includes('permission denied');
+}
+
+function isStaticEnvironment(): boolean {
+  const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+  return (
+    Boolean(cap?.isNativePlatform?.()) ||
+    location.protocol === 'file:' ||
+    location.protocol === 'capacitor:' ||
+    location.hostname.endsWith('.github.io') ||
+    location.hostname === 'github.io'
+  );
 }
 
 export function setPfNotify(fn: (m: string) => void) {
@@ -227,15 +246,7 @@ export async function probeBackend(force = false): Promise<boolean> {
   }
 
   probePromise = (async () => {
-    const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
-    const isStaticHost =
-      Boolean(cap?.isNativePlatform?.()) ||
-      location.protocol === 'file:' ||
-      location.protocol === 'capacitor:' ||
-      location.hostname.endsWith('.github.io') ||
-      location.hostname === 'github.io';
-
-    if (isStaticHost) {
+    if (isStaticEnvironment()) {
       backendAvailable = false;
       storageMode = directSupabase ? 'supabase-direct' : 'local';
       supabaseEnabled = Boolean(directSupabase);
@@ -254,10 +265,11 @@ export async function probeBackend(force = false): Promise<boolean> {
       if (res.ok && ct.includes('application/json')) {
         const d = await res.json();
         supabaseMissingTable = Boolean(d?.missingTable);
+        supabaseRlsBlocked = Boolean(d?.rlsBlocked);
         if (d && d.ok) {
           backendAvailable = true;
           storageMode = 'server';
-          supabaseEnabled = Boolean(d.supabase);
+          supabaseEnabled = Boolean(d.supabase) && !supabaseRlsBlocked;
           return true;
         }
       }
@@ -268,8 +280,8 @@ export async function probeBackend(force = false): Promise<boolean> {
     }
 
     backendAvailable = false;
-    storageMode = directSupabase && !supabaseMissingTable ? 'supabase-direct' : 'local';
-    supabaseEnabled = Boolean(directSupabase && !supabaseMissingTable);
+    storageMode = directSupabase && !supabaseMissingTable && !supabaseRlsBlocked ? 'supabase-direct' : 'local';
+    supabaseEnabled = Boolean(directSupabase && !supabaseMissingTable && !supabaseRlsBlocked);
     return false;
   })();
 
@@ -320,7 +332,7 @@ async function apiAuthRequest(
         body: JSON.stringify(payload),
       });
       const parsed = await parseJsonSafe(res);
-      if (parsed.ok && res.status < 500) {
+      if (parsed.ok && (res.status < 500 || typeof parsed.data?.error === 'string')) {
         return { ok: true, res, data: parsed.data };
       }
     } catch {
@@ -333,8 +345,8 @@ async function apiAuthRequest(
     }
   }
   backendAvailable = false;
-  storageMode = directSupabase && !supabaseMissingTable ? 'supabase-direct' : 'local';
-  supabaseEnabled = Boolean(directSupabase && !supabaseMissingTable);
+  storageMode = directSupabase && !supabaseMissingTable && !supabaseRlsBlocked ? 'supabase-direct' : 'local';
+  supabaseEnabled = Boolean(directSupabase && !supabaseMissingTable && !supabaseRlsBlocked);
   return { ok: false };
 }
 
@@ -568,7 +580,13 @@ export async function accRegister(name: string, password: string, remember: bool
     });
     if (attempt.ok) {
       const { res, data } = attempt;
-      if (!res.ok) return data?.error || 'Ошибка регистрации';
+      if (!res.ok) {
+        if (data?.rlsBlocked) {
+          supabaseRlsBlocked = true;
+          supabaseEnabled = false;
+        }
+        return data?.error || 'Ошибка регистрации';
+      }
       authToken = data.token || '';
       storeSessionToken(authToken, remember);
       ACC = data.user;
@@ -578,8 +596,9 @@ export async function accRegister(name: string, password: string, remember: bool
         if (remember) lsSet(LS_ACC, ACC);
         else lsDel(LS_ACC);
       }
-      supabaseEnabled = Boolean(data.supabase);
+      supabaseRlsBlocked = Boolean(data.rlsBlocked);
       supabaseMissingTable = Boolean(data.missingTable);
+      supabaseEnabled = Boolean(data.supabase) && !supabaseRlsBlocked;
       if (supabaseMissingTable) {
         notifyFn('Аккаунт сохранён только на этом устройстве: создайте таблицу players в Supabase.');
       }
@@ -604,6 +623,12 @@ export async function accRegister(name: string, password: string, remember: bool
         supabaseMissingTable = true;
         supabaseEnabled = false;
         storageMode = 'local';
+      } else if (selErr && isRlsErr(selErr)) {
+        supabaseRlsBlocked = true;
+        supabaseEnabled = false;
+        return 'В Supabase заблокирован доступ к таблице players (RLS). Выполните SQL из supabase_schema.sql в Supabase SQL Editor.';
+      } else if (selErr) {
+        return `Ошибка Supabase: ${selErr.message}`;
       } else {
         if (existing) return 'Такое имя уже занято. Войдите в аккаунт.';
         const { error } = await directSupabase.from('players').insert({
@@ -618,6 +643,9 @@ export async function accRegister(name: string, password: string, remember: bool
           updated_at: new Date().toISOString(),
         });
         if (!error) {
+          supabaseRlsBlocked = false;
+          supabaseEnabled = true;
+          storageMode = 'supabase-direct';
           ACC = { slug, name: cleanName };
           syncLoadedProfile(initProf);
           lsSet(LS_PRE + slug, PF);
@@ -630,13 +658,23 @@ export async function accRegister(name: string, password: string, remember: bool
           supabaseMissingTable = true;
           supabaseEnabled = false;
           storageMode = 'local';
+        } else if (isRlsErr(error)) {
+          supabaseRlsBlocked = true;
+          supabaseEnabled = false;
+          return 'В Supabase заблокирована запись (RLS). Выполните SQL из supabase_schema.sql в Supabase SQL Editor.';
+        } else if (error.code === '23505') {
+          return 'Такое имя уже занято. Войдите в аккаунт.';
         } else {
-          return 'Не удалось создать аккаунт в Supabase';
+          return `Не удалось создать аккаунт в Supabase: ${error.message}`;
         }
       }
     } catch {
       return 'Ошибка подключения к Supabase';
     }
+  }
+
+  if (serverFailed && !supabaseMissingTable && !isStaticEnvironment()) {
+    return 'Сервер недоступен — не удалось сохранить аккаунт в базу Supabase. Попробуйте ещё раз.';
   }
 
   const accs = lsGet<Record<string, { slug: string; name: string; salt: string; hash: string }>>(LS_ACCS, {});
@@ -682,8 +720,8 @@ export async function accLogin(name: string, password: string, remember: boolean
         if (remember) lsSet(LS_ACC, ACC);
         else lsDel(LS_ACC);
       }
-      supabaseEnabled = Boolean(data.supabase);
       supabaseMissingTable = Boolean(data.missingTable);
+      supabaseEnabled = Boolean(data.supabase) && !supabaseRlsBlocked;
       onAuthChangeFn();
       return '';
     }
@@ -701,6 +739,10 @@ export async function accLogin(name: string, password: string, remember: boolean
         supabaseMissingTable = true;
         supabaseEnabled = false;
         storageMode = 'local';
+      } else if (error && isRlsErr(error)) {
+        supabaseRlsBlocked = true;
+        supabaseEnabled = false;
+        return 'В Supabase заблокирован доступ к таблице players (RLS). Выполните SQL из supabase_schema.sql в Supabase SQL Editor.';
       } else {
         if (error || !data) return 'Аккаунт не найден';
         const storedHash = String(data.password_hash || '');
@@ -719,6 +761,7 @@ export async function accLogin(name: string, password: string, remember: boolean
             .eq('slug', slug)
             .then(() => {}, () => {});
         }
+        supabaseRlsBlocked = false;
         ACC = { slug: String(data.slug), name: String(data.name) };
         syncLoadedProfile(data.profile);
         lsSet(LS_PRE + slug, PF);
@@ -773,8 +816,9 @@ export async function accAuto(): Promise<boolean> {
   if (hasServer) {
     try {
       const res = await apiFetch('/api/auth/me', { method: 'GET' });
-      if (res.ok) {
-        const data = await res.json();
+      const parsed = await parseJsonSafe(res);
+      if (res.ok && parsed.ok && parsed.data?.user) {
+        const data = parsed.data;
         authToken = data.token || authToken;
         if (authToken) {
           const hadRemember = Boolean(localStorage.getItem(LS_TOK));
@@ -783,13 +827,15 @@ export async function accAuto(): Promise<boolean> {
         ACC = data.user;
         syncLoadedProfile(data.profile);
         if (ACC) lsSet(LS_PRE + ACC.slug, PF);
-        supabaseEnabled = Boolean(data.supabase);
         supabaseMissingTable = Boolean(data.missingTable);
+        supabaseEnabled = Boolean(data.supabase) && !supabaseRlsBlocked;
         onAuthChangeFn();
         return true;
       }
-      storeSessionToken('', false);
-      authToken = '';
+      if (res.status === 401 || res.status === 403) {
+        storeSessionToken('', false);
+        authToken = '';
+      }
       return false;
     } catch {
       return false;
@@ -838,8 +884,11 @@ export async function fetchLeaderboard(): Promise<{
   if (hasServer) {
     try {
       const res = await apiFetch('/api/leaderboard', { method: 'GET' });
-      if (!res.ok) return { list: [], supabase: false };
-      return await res.json();
+      const parsed = await parseJsonSafe(res);
+      if (!res.ok || !parsed.ok || !Array.isArray(parsed.data?.list)) {
+        return { list: [], supabase: false };
+      }
+      return parsed.data;
     } catch {
       return { list: [], supabase: false };
     }

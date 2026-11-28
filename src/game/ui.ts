@@ -39,6 +39,7 @@ import {
   storageMode,
   supabaseEnabled,
   supabaseMissingTable,
+  supabaseRlsBlocked,
   taskDone,
   techBuy,
   todayTasks,
@@ -812,14 +813,17 @@ function offerTutorial(): void {
 }
 
 function authDbStatusText(): string {
-  if (supabaseEnabled) {
-    return 'Облачное сохранение через Supabase подключено.';
+  if (supabaseRlsBlocked) {
+    return 'Подключение к Supabase есть, но запись в таблицу players заблокирована (RLS/права). Выполните SQL из supabase_schema.sql в Supabase SQL Editor.';
   }
   if (supabaseMissingTable) {
     return 'Ключи Supabase найдены, но таблица players не создана (выполните supabase_schema.sql в Supabase SQL Editor). Пока работает локальное сохранение.';
   }
+  if (supabaseEnabled) {
+    return 'Облачное сохранение через Supabase подключено.';
+  }
   if (storageMode === 'local') {
-    return 'Локальное сохранение в браузере активно (аккаунт сохраняется на этом устройстве).';
+    return 'Локальное сохранение на устройстве активно (для синхронизации в APK задайте VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY при сборке).';
   }
   return 'Сохранение прогресса на сервере активно (для облака Supabase нужны SUPABASE_URL и SUPABASE_ANON_KEY).';
 }
@@ -868,6 +872,8 @@ function showAuth(mode: 'in' | 'up' = 'up'): void {
     if (btn) btn.disabled = false;
     if (m) {
       if (er) er.textContent = m;
+      const cl = $('aCl');
+      if (cl) cl.textContent = authDbStatusText();
       return;
     }
     autoQ();

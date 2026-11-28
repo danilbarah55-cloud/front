@@ -8,6 +8,7 @@ import {
   getPlayerBySlug,
   isSupabaseConnected,
   isSupabaseMissingTable,
+  isSupabaseRlsBlocked,
   updatePlayerPasswordHash,
   updatePlayerProfileRecord,
   verifySupabaseConnection,
@@ -175,13 +176,14 @@ export function createApiApp(): express.Express {
   const app = express();
   app.set('trust proxy', 1);
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    if (
-      req.method !== 'GET' &&
-      req.method !== 'HEAD' &&
-      Object.prototype.hasOwnProperty.call(req, 'body') &&
-      (req as unknown as { body?: unknown }).body !== undefined
-    ) {
-      (req as unknown as { _body?: boolean })._body = true;
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      try {
+        if (req.readableEnded && (req as unknown as { body?: unknown }).body !== undefined) {
+          (req as unknown as { _body?: boolean })._body = true;
+        }
+      } catch {
+        // let express.json parse raw stream
+      }
     }
     next();
   });
@@ -204,6 +206,7 @@ export function createApiApp(): express.Express {
       ok,
       supabase: status.connected,
       missingTable: status.missingTable,
+      rlsBlocked: isSupabaseRlsBlocked(),
     });
   });
 
@@ -237,7 +240,7 @@ export function createApiApp(): express.Express {
           ? req.body.initialProfile
           : {};
 
-      await createPlayerRecord({
+      const createRes = await createPlayerRecord({
         slug,
         name,
         salt,
@@ -248,6 +251,19 @@ export function createApiApp(): express.Express {
         profile: initialProfile as Record<string, unknown>,
         updated_at: new Date().toISOString(),
       });
+
+      if (!createRes.ok) {
+        const status = createRes.rlsBlocked
+          ? 403
+          : createRes.error?.includes('занято')
+            ? 409
+            : 502;
+        res.status(status).json({
+          error: createRes.error || 'Не удалось сохранить аккаунт в базу',
+          rlsBlocked: createRes.rlsBlocked,
+        });
+        return;
+      }
 
       const token = signSession({
         slug,
@@ -264,6 +280,7 @@ export function createApiApp(): express.Express {
         profile: initialProfile,
         supabase: isSupabaseConnected(),
         missingTable: isSupabaseMissingTable(),
+        rlsBlocked: createRes.rlsBlocked,
       });
     } catch (err) {
       console.error('[API] Register error:', err);
